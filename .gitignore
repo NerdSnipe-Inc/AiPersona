@@ -6,3 +6,4 @@
 
 .worktrees/
 development-plan.md
+.claude/settings.local.json
