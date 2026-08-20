@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+*.xcodeproj
+.DS_Store
+.superpowers-review-*.diff
+
+.worktrees/
+development-plan.md
