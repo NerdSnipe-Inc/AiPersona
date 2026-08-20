@@ -1,7 +1,7 @@
 # AiPersona vs. synapse-cortex — Feature Comparison
 
 Source: https://github.com/juandastic/synapse-cortex#core-features (reference project, server-side, Python/FastAPI/Neo4j/Graphiti). Compared against the README's 9 numbered Core Features 1:1.
-Target: `AiPersona` (this package — Swift Package, on-device, SwiftData), reviewed at commit `5e49ce8` (2026-07-22).
+Target: `AiPersona` (this package — Swift Package, on-device, SwiftData), reviewed at commit `5e49ce8` (2026-07-22); re-verified against current source and updated 2026-08-20 (entity resolution, memory CRUD primitives, extraction quality filtering, storage isolation).
 
 Legend: ✅ Done · 🟡 Partial / simplified · ❌ Not implemented
 
@@ -26,7 +26,7 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 | Aspect | synapse-cortex | AiPersona | Status |
 |---|---|---|---|
 | Runtime | Stateless REST API (FastAPI/Uvicorn), Docker/Digital Ocean | In-process Swift library, embedded in a host app (macOS 14+/iOS 17+) | 🟡 Different deployment model by design |
-| Storage | Neo4j graph DB + vector index | SwiftData (`EntityNode`, `EpisodicNode`, `FactEdge`) in an isolated on-disk store (`AiPersonaMemory.store`) | ✅ Equivalent graph shape, embedded engine |
+| Storage | Neo4j graph DB + vector index | SwiftData (`EntityNode`, `EpisodicNode`, `FactEdge`) in an on-disk store (`AiPersonaMemory.store`), namespaced under Application Support/`<host bundle ID>` — fixed from a shared, unnamespaced path where any two unsandboxed host apps on the same Mac would have read/written the same file | ✅ Equivalent graph shape, embedded engine, genuinely per-host-app isolated |
 | Graph engine | Graphiti Core (temporal KG library) | Hand-rolled equivalent (`MemoryGraphStore`) | ✅ Core semantics reproduced, not the library |
 | Multi-tenant / multi-user | Yes — per-request auth, stateless cache-name ownership | No — single local user/persona per host app instance | ❌ Not applicable to on-device use case |
 
@@ -38,7 +38,7 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 | Episodic nodes (raw conversation) | ✅ Graphiti `Episodic` | ✅ `EpisodicNode` (`MemoryModels.swift:39`) | ✅ Done |
 | Relationship/fact edges | ✅ Graphiti edges with facts + timestamps | ✅ `FactEdge` (`MemoryModels.swift:55`) | ✅ Done |
 | Temporal validity (`valid_at`/`invalid_at`) | ✅ | ✅ Same fields, same semantics — never deletes, only invalidates (`MemoryGraphStore.swift:76-120`) | ✅ Done |
-| Entity resolution / dedup ("Juan", "JG" → one node) | ✅ LLM-driven fuzzy resolution via Graphiti | 🟡 Case-insensitive **exact name match only** (`findEntity`, `MemoryGraphStore.swift:58-61`) — explicitly documented as a simplification, no embedding-similarity fuzzy matching | 🟡 Partial |
+| Entity resolution / dedup ("Juan", "JG" → one node) | ✅ LLM-driven fuzzy resolution via Graphiti | 🟡 `upsertEntity` tries exact case-insensitive match first, then deterministic fuzzy matching via `EntityNameMatcher` (token-subset containment + initials matching, e.g. "Juan" ⊆ "Juan Gómez", "JG" == initials of "Juan Gómez") — no longer exact-match-only, but still not LLM/embedding-driven; word-embedding similarity was tried and explicitly ruled out (`EntityNameMatcher.swift:1-9`) since proper nouns have no entry in the general-English embedding vocabulary | 🟡 Partial (deterministic heuristic, not LLM resolution) |
 | Degree-based / confidence-based entity ranking | ✅ Used in hydration to exclude low-confidence entities | ❌ No node-degree concept at all | ❌ Not implemented |
 | LLM-driven entity/relationship extraction | ✅ Graphiti + Gemini | ✅ Same idea: any `MemoryProvider` (local MLX, Gemini, OpenAI, Anthropic) extracts `[ExtractedFact]` via a JSON-array prompt contract (`MemoryProvider.swift`) | ✅ Done |
 
@@ -87,7 +87,7 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 | Notion Export (graph → Notion DBs, Gemini-designed dynamic schema, MCP agent, async+polling, feedback-loop columns) | ✅ Full pipeline via `create_react_agent` + Notion MCP server | ❌ No Notion, no MCP, no export pipeline | ❌ Not implemented |
 | Notion Correction Import (reads corrections from Notion, MCP agent updates/deletes rows, `add_episode` w/ `custom_extraction_instructions`, partial-failure handling) | ✅ Full pipeline | ❌ None | ❌ Not implemented |
 | Knowledge Graph Visualization (React-Force-Graph node/link export format, temporal filtering) | ✅ Dedicated endpoint returning nodes/links shaped for frontend rendering | ❌ No graph-export format at all — `allEntities()`/`allFacts()` (`MemoryGraphStore.swift:130-140`) return raw SwiftData models, not a nodes/links shape a UI could render directly | ❌ Not implemented |
-| Any general UI for browsing/editing memory | ✅ Via Notion | ❌ None — headless library, host app would need to build its own UI over `MemoryGraphStore.allEntities()/allFacts()` | ❌ Not implemented |
+| Any general UI for browsing/editing memory | ✅ Via Notion | 🟡 Still a headless library — no UI ships in this package — but the CRUD primitives a UI needs now exist: `updateEntity(id:name:summary:)`, `deleteEntity(id:)`, `updateFact(id:factText:)` (`MemoryGraphStore.swift:248,261,276`), alongside the existing `upsertEntity`. A host app (AICompleteChat) has built a real browse/edit UI on top of these. | 🟡 Partial (library primitives done, no bundled UI) |
 
 ## 8. Security / Secrets
 
@@ -111,7 +111,7 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 | Temporal knowledge graph model | ✅ Done |
 | LLM-driven fact extraction | ✅ Done (and multi-provider, exceeding source) |
 | Memory correction / invalidation | 🟡 Partial (conservative, similarity-gated) |
-| Entity resolution / dedup | 🟡 Partial (exact-match only, no fuzzy/LLM resolution) |
+| Entity resolution / dedup | 🟡 Partial (deterministic fuzzy matching now closes the exact-match gap; still not LLM-driven) |
 | Degree-based entity ranking | ❌ Not implemented |
 | Hydration (session compilation) | 🟡 Partial (no character-budget strategy) |
 | Per-turn GraphRAG-style retrieval | ✅ Done |
@@ -126,7 +126,8 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 | Notion correction import | ❌ Not implemented |
 | Knowledge graph visualization (node/link export) | ❌ Not implemented |
 | Chat completions API (server) | ❌ Out of scope (different product shape) |
-| Memory browsing/editing UI (general) | ❌ Not implemented |
+| Memory browsing/editing UI (general) | 🟡 Partial (CRUD primitives — `updateEntity`/`deleteEntity`/`updateFact` — done; no UI bundled in this package) |
+| Extraction quality filtering (junk-entity/transient-fact rejection) | ✅ Done (not tracked by source — on-device-model-specific reliability issue) |
 | Multi-tenant/stateless server model | ❌ Not applicable (on-device single-user design) |
 
 ---
@@ -137,9 +138,11 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 
 **Where the reimplementation is genuinely strong.** The temporal fact model (bi-temporal `validAt`/`invalidAt`, never-delete semantics), the BM25+embedding RRF hybrid search, and the two-layer retrieval split (cached session compilation + per-turn top-up excluding what's already surfaced) all mirror synapse-cortex's actual mechanics rather than just its vocabulary. The multi-provider abstraction (local MLX / Gemini / OpenAI / Anthropic, independently selectable for extraction vs. chat) is a real improvement over the source, which is hard-wired to Gemini. Code comments throughout show these design choices were made deliberately and validated against real bugs (e.g. the SwiftData store-collision fix, the persona preamble fix, the correction-targeting narrowing) — this is not vibe-coded; it reads as carefully reasoned.
 
-**The two simplifications most likely to bite in practice, in order of impact:**
+**Update — entity resolution is no longer exact-match only.** The original review's #1 highest-priority gap has since been closed with a deterministic (not LLM/embedding-driven) fuzzy matcher: `EntityNameMatcher` catches token-subset containment ("Juan" ⊆ "Juan Gómez") and initials ("JG" == initials of "Juan Gómez"), wired into `upsertEntity` as a second-pass fallback after exact match. Embedding similarity was tried first and explicitly abandoned — proper nouns like personal names generally have no entry in the general-English word-embedding vocabulary `LocalEmbedder` uses, so cosine similarity between two names was always 0. Remaining gap: still not LLM-driven resolution, so cases outside token-subset/initials patterns (nicknames, transliteration variants) won't merge. Lower priority than before, but not zero.
 
-1. **Entity resolution is exact-match only.** `findEntity` does a case-insensitive string match — "Juan" and "Juan Gómez" become two separate nodes with no linkage. Synapse-cortex's whole reason for existing is *avoiding* this kind of graph fragmentation. As the fact count grows, this will silently degrade retrieval quality (duplicate/fragmented entities split the fact edges that should be associated with one node) without ever surfacing as an error. This is the highest-value gap to close — even a cheap embedding-similarity threshold before falling back to exact match would meaningfully help, and `LocalEmbedder` + `cosineSimilarity` already exist to do it with almost no new code.
+**The remaining simplification most likely to bite in practice:**
+
+1. **Junk extraction was a real, observed production bug — now mitigated, not eliminated.** The extraction prompt originally said "extract every distinct fact... mentioned," with no importance filter and no pronoun resolution — this produced literal junk in production: an entity named `"I"` (the model taking a first-person pronoun as a literal name when it had no resolved identity to substitute), and facts like `"The current date is Thursday, August 20, 2026."` persisted as permanent memories once the system prompt started stating the date every turn. Fixed at two levels: the extraction prompt (`MemoryProvider.swift`'s `ExtractionPromptFormat.instruction`) now explicitly filters for durable, future-useful facts, excludes transient/self-evident info, and accepts a `"Known user name: X"` context line so first-person references resolve to a real name when available (threaded from a new `PersonaStore.userName` field via `IngestionActor.enqueue(_:provider:store:knownUserName:)`); and `IngestionActor` itself now has a code-level backstop (drops pronoun-subject/object facts, drops current-date/time-phrased facts, skips exact-duplicate facts — `addFact` itself still has no dedup) since prompt compliance on a small on-device model is never guaranteed. This isn't a synapse-cortex parity gap (the source doesn't document this problem at all, likely because Gemini as a much larger model is less prone to it) — it's a real reliability issue specific to running extraction on a small on-device model, now covered by 5 regression tests but not eliminated at the root (a sufficiently confident but wrong extraction still isn't caught by either layer).
 
 2. **Correction invalidation for subject-only facts is a similarity threshold, not true resolution.** The current approach (invalidate the single most-similar active fact above `minimumSimilarity`, else no-op) is a reasonable, safety-first stopgap — it explicitly favors under-correcting over wrongly wiping unrelated facts — but it means some genuine corrections will silently fail to apply if similarity falls just under the bar, with no user-visible signal that the correction "did nothing." Worth deciding whether that failure mode should ever surface (e.g. a debug log, or returning a bool from `invalidateFacts` so a host app *could* choose to tell the user "I'm not sure what to update").
 
@@ -153,4 +156,4 @@ Degree-based entity ranking, automatic retrieval gating, and reranking (features
 
 **One structural risk worth flagging, not a feature gap:** `MemoryGraphStore`, `RetrievalService`, `PersonaStore`, and `MemorySettingsStore` are all `@MainActor` singletons. That's fine for a small local dataset today, but `BM25Scorer`/`HybridSearch` recompute over the *entire* active-fact set on every call with no persistent index — documented as an intentional simplification ("future optimization if profiling ever shows otherwise"). Worth keeping an eye on once a host app's users accumulate thousands of facts; recomputing full BM25 on the main actor on every chat turn is the kind of thing that's invisible in testing and shows up as UI jank in the field.
 
-**Overall assessment:** the package has faithfully captured synapse-cortex's core cognitive-loop *ideas* (temporal graph, hybrid retrieval, correction-via-invalidation, LLM-driven extraction) in an architecture appropriate for its actual target (embedded, on-device, multi-provider), while consciously dropping the parts of synapse-cortex that are genuinely server/product features rather than memory-engine features. The remaining gaps split into two groups: entity resolution quality (highest priority, cheap to fix) and four features with no client-side equivalent implemented yet but no architectural blocker either — Notion export, Notion correction import, Gemini caching, and knowledge graph visualization. None of those four require a server; they're unbuilt, not unbuildable.
+**Overall assessment:** the package has faithfully captured synapse-cortex's core cognitive-loop *ideas* (temporal graph, hybrid retrieval, correction-via-invalidation, LLM-driven extraction) in an architecture appropriate for its actual target (embedded, on-device, multi-provider), while consciously dropping the parts of synapse-cortex that are genuinely server/product features rather than memory-engine features. As of the 2026-08-20 re-verification, entity resolution (previously the highest-priority gap) has a real deterministic fix in place, and memory CRUD primitives now exist for a host app to build a browse/edit UI on. What's left splits into two groups: correction-targeting precision for subject-only facts (moderate priority, see above), and four features with no client-side equivalent implemented yet but no architectural blocker either — Notion export, Notion correction import, Gemini caching, and knowledge graph visualization. None of those four require a server; they're unbuilt, not unbuildable.
