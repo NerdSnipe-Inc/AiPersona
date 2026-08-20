@@ -75,6 +75,23 @@ public final class RetrievalService {
         return Self.hybridSearchBlock(forQuery: query, over: candidateFacts, limit: limit)
     }
 
+    /// Same as `perTurnMemoryBlock(forQuery:excluding:limit:)`, plus a reranking pass over the
+    /// hybrid-search result — synapse-cortex's Gemini reranking feature (an opt-in overload rather
+    /// than a parameter on the sync method, so this async, LLM-backed path can never be reached by
+    /// accident; a host app must explicitly supply a `Reranker`). Falls back to the unreranked
+    /// hybrid-search order if `reranker` returns something that isn't a faithful reordering of what
+    /// it was given (wrong count, invented lines) — a broken/misbehaving reranker degrades to "no
+    /// reranking," never to a corrupted or truncated memory block.
+    public func perTurnMemoryBlock(forQuery query: String, excluding compilationText: String, limit: Int = 5, reranker: any Reranker) async -> String? {
+        guard !isCompilationExhaustive() else { return nil }
+        let candidateFacts = store.activeFacts().filter { !compilationText.contains($0.factText) }
+        guard let block = Self.hybridSearchBlock(forQuery: query, over: candidateFacts, limit: limit) else { return nil }
+        let lines = block.components(separatedBy: "\n")
+        let reranked = await reranker.rerank(query: query, candidates: lines)
+        guard Set(reranked) == Set(lines) else { return block }
+        return reranked.joined(separator: "\n")
+    }
+
     /// Hybrid-search over exactly one `predicate` slice of the graph, independent of
     /// `sessionCompilation()`/`perTurnMemoryBlock`'s contact-memory budget. Lets a host app ground
     /// answers in a static or reference knowledge base (e.g. a product-knowledge fact set) without

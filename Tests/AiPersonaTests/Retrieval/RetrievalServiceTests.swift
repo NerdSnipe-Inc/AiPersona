@@ -156,6 +156,62 @@ final class RetrievalServiceTests: XCTestCase {
         XCTAssertNil(block, "an exhaustive compilation must gate the search off even when the passed-in exclusion text doesn't itself cover the fact")
     }
 
+    private struct ReversingReranker: Reranker {
+        func rerank(query: String, candidates: [String]) async -> [String] { candidates.reversed() }
+    }
+
+    private struct MisbehavingReranker: Reranker {
+        func rerank(query: String, candidates: [String]) async -> [String] { ["something that was never a candidate"] }
+    }
+
+    func test_perTurnMemoryBlockWithReranker_appliesRerankedOrder() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: [])
+        for i in 0..<10 {
+            let text = "fact number \(i) about visas and travel"
+            store.addFact(subjectID: user.id, objectID: nil, predicate: "has", factText: text, embedding: LocalEmbedder.embed(text))
+        }
+        let service = RetrievalService(store: store, factLimit: 3)
+        let compilation = service.sessionCompilation()
+
+        let unreranked = service.perTurnMemoryBlock(forQuery: "visas and travel", excluding: compilation, limit: 5)
+        let reranked = await service.perTurnMemoryBlock(forQuery: "visas and travel", excluding: compilation, limit: 5, reranker: ReversingReranker())
+
+        XCTAssertNotNil(unreranked)
+        XCTAssertNotNil(reranked)
+        XCTAssertEqual(reranked, unreranked?.components(separatedBy: "\n").reversed().joined(separator: "\n"), "the reranker's reordering must be reflected in the returned block")
+    }
+
+    func test_perTurnMemoryBlockWithReranker_fallsBackToHybridOrder_whenRerankerMisbehaves() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: [])
+        for i in 0..<10 {
+            let text = "fact number \(i) about visas and travel"
+            store.addFact(subjectID: user.id, objectID: nil, predicate: "has", factText: text, embedding: LocalEmbedder.embed(text))
+        }
+        let service = RetrievalService(store: store, factLimit: 3)
+        let compilation = service.sessionCompilation()
+
+        let unreranked = service.perTurnMemoryBlock(forQuery: "visas and travel", excluding: compilation, limit: 5)
+        let reranked = await service.perTurnMemoryBlock(forQuery: "visas and travel", excluding: compilation, limit: 5, reranker: MisbehavingReranker())
+
+        XCTAssertEqual(reranked, unreranked, "a reranker returning something that isn't a faithful reorder of the candidates must not corrupt the block")
+    }
+
+    func test_perTurnMemoryBlockWithReranker_respectsGating() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: LocalEmbedder.embed("User"))
+        let factText = "prefers dark mode"
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "prefers", factText: factText, embedding: LocalEmbedder.embed(factText))
+
+        let service = RetrievalService(store: store, factLimit: 20)
+        _ = service.sessionCompilation()
+
+        let block = await service.perTurnMemoryBlock(forQuery: "dark mode preference", excluding: "", reranker: ReversingReranker())
+
+        XCTAssertNil(block, "the reranked overload must respect isCompilationExhaustive() gating exactly like the sync overload")
+    }
+
     func test_perTurnMemoryBlock_canReturnFact_excludedFromBudgetedCompilation() {
         let store = MemoryGraphStore(inMemory: true)
         let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
