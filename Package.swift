@@ -43,7 +43,7 @@ let package = Package(
         siblingOrRemote(
             siblingRelativePath: "../AIChatKitMLX",
             url: "https://github.com/NerdSnipe-Inc/AIChatKitMLX.git",
-            from: "0.1.0"
+            from: "1.0.0"
         ),
     ],
     targets: [
