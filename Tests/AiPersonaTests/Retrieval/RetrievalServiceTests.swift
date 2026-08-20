@@ -85,6 +85,77 @@ final class RetrievalServiceTests: XCTestCase {
         XCTAssertFalse(compilation.contains("Dave was mentioned once"), "a lone, low-degree entity should lose budget to a well-connected one despite being more recent")
     }
 
+    func test_isCompilationExhaustive_true_whenAllFactsFitUnderBudget() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: [])
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "likes", factText: "likes tea", embedding: [])
+
+        let service = RetrievalService(store: store, factLimit: 20)
+
+        XCTAssertTrue(service.isCompilationExhaustive(), "one fact well under a factLimit of 20 leaves nothing truncated")
+    }
+
+    func test_isCompilationExhaustive_false_whenFactsExceedBudget() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: [])
+        for i in 0..<10 {
+            store.addFact(subjectID: user.id, objectID: nil, predicate: "has", factText: "fact \(i)", embedding: [])
+        }
+
+        let service = RetrievalService(store: store, factLimit: 5)
+
+        XCTAssertFalse(service.isCompilationExhaustive(), "10 facts over a factLimit of 5 means the compilation truncated some")
+    }
+
+    func test_isCompilationExhaustive_false_afterFactAddedSinceCaching() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: [])
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "likes", factText: "likes tea", embedding: [])
+
+        let service = RetrievalService(store: store, factLimit: 20)
+        XCTAssertTrue(service.isCompilationExhaustive(), "caches the compilation as exhaustive with just one fact")
+
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "likes", factText: "likes coffee too", embedding: [])
+
+        XCTAssertFalse(
+            service.isCompilationExhaustive(),
+            "a fact added after caching is missing from the stale cached compilation text even though the total is still under factLimit — gating must fail closed, not trust the stale count"
+        )
+    }
+
+    func test_isCompilationExhaustive_resets_onNewSession() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: [])
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "likes", factText: "likes tea", embedding: [])
+
+        let service = RetrievalService(store: store, factLimit: 20)
+        _ = service.isCompilationExhaustive()
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "likes", factText: "likes coffee too", embedding: [])
+        XCTAssertFalse(service.isCompilationExhaustive())
+
+        service.startNewSession()
+
+        XCTAssertTrue(service.isCompilationExhaustive(), "a fresh session recompiles against the current graph, which is exhaustive again")
+    }
+
+    func test_perTurnMemoryBlock_skipsSearch_whenCompilationIsExhaustive() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "", kind: .user, embedding: LocalEmbedder.embed("User"))
+        let factText = "prefers dark mode"
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "prefers", factText: factText, embedding: LocalEmbedder.embed(factText))
+
+        let service = RetrievalService(store: store, factLimit: 20)
+        let compilation = service.sessionCompilation()
+        XCTAssertTrue(compilation.contains(factText))
+
+        // Deliberately query for something that WOULD hybrid-match this fact if search ran, and
+        // pass an exclusion text that does NOT contain it — proving any non-nil result here can
+        // only come from gating failing to skip the search, not from an unrelated miss.
+        let block = service.perTurnMemoryBlock(forQuery: "dark mode preference", excluding: "")
+
+        XCTAssertNil(block, "an exhaustive compilation must gate the search off even when the passed-in exclusion text doesn't itself cover the fact")
+    }
+
     func test_perTurnMemoryBlock_canReturnFact_excludedFromBudgetedCompilation() {
         let store = MemoryGraphStore(inMemory: true)
         let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])

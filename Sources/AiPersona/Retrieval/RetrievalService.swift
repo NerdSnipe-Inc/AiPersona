@@ -5,6 +5,8 @@ import Foundation
 /// chat session starts) plus a per-turn hybrid-search top-up for anything not already in the
 /// compilation. Facts beyond the budget are excluded from the compilation and become retrievable
 /// via hybrid search on a later turn — this is what gives `perTurnMemoryBlock` real work to do.
+/// `isCompilationExhaustive()` gates that per-turn work: when the graph is small enough that
+/// nothing was excluded, the search is skipped rather than run against a guaranteed-empty pool.
 @MainActor
 public final class RetrievalService {
     public static let shared = RetrievalService(store: .shared)
@@ -12,6 +14,11 @@ public final class RetrievalService {
     private let store: MemoryGraphStore
     private let factLimit: Int
     private var cachedCompilation: String?
+    /// The live `store.activeFacts().count` at the moment `cachedCompilation` was built — the
+    /// baseline `isCompilationExhaustive()` compares against to detect drift (facts added or
+    /// invalidated since caching). Cached and cleared alongside `cachedCompilation`, never derived
+    /// independently, so the two can never disagree about which snapshot they describe.
+    private var cachedActiveFactCount: Int?
 
     public init(store: MemoryGraphStore, factLimit: Int = 20) {
         self.store = store
@@ -20,6 +27,7 @@ public final class RetrievalService {
 
     public func startNewSession() {
         cachedCompilation = nil
+        cachedActiveFactCount = nil
     }
 
     public func sessionCompilation() -> String {
@@ -31,13 +39,38 @@ public final class RetrievalService {
             .map(\.factText)
         let compilation = facts.joined(separator: "\n")
         cachedCompilation = compilation
+        cachedActiveFactCount = activeFacts.count
         return compilation
+    }
+
+    /// AiPersona's equivalent of synapse-cortex's `is_partial: false` short-circuit, which skips
+    /// per-turn GraphRAG retrieval once hydration already covers the whole graph — `perTurnMemoryBlock`
+    /// uses this to skip its own work entirely rather than run a hybrid search guaranteed to find
+    /// nothing.
+    ///
+    /// True only when BOTH (a) the graph fit inside `factLimit` when `sessionCompilation()` was
+    /// last cached — nothing was truncated out of it — AND (b) the live active-fact count still
+    /// matches that cached snapshot exactly, i.e. nothing has been added or invalidated since.
+    /// Condition (b) exists because `sessionCompilation()` is cached for the whole session, not
+    /// recomputed per turn (see its doc comment); a fact ingested mid-session would be missing from
+    /// the stale cached text while still being "active," so gating must fail closed — return
+    /// `false`, meaning "search anyway" — the moment the live count drifts from the cached one,
+    /// rather than risk hiding a real fact from retrieval just because the graph *used to* fit.
+    /// Calling this computes `sessionCompilation()` first if this session hasn't cached one yet, so
+    /// the two never disagree about which snapshot "exhaustive" is being asked about.
+    public func isCompilationExhaustive() -> Bool {
+        _ = sessionCompilation()
+        guard let cachedActiveFactCount, cachedActiveFactCount <= factLimit else { return false }
+        return store.activeFacts().count == cachedActiveFactCount
     }
 
     /// Runs hybrid search over active facts, excluding any whose text is already substring-present
     /// in `compilationText`, and returns a formatted memory block, or `nil` when nothing relevant
-    /// is found.
+    /// is found. Gated by `isCompilationExhaustive()`: when the cached compilation already provably
+    /// contains every active fact, skips the search entirely instead of computing it only to
+    /// discover the candidate pool is empty.
     public func perTurnMemoryBlock(forQuery query: String, excluding compilationText: String, limit: Int = 5) -> String? {
+        guard !isCompilationExhaustive() else { return nil }
         let candidateFacts = store.activeFacts().filter { !compilationText.contains($0.factText) }
         return Self.hybridSearchBlock(forQuery: query, over: candidateFacts, limit: limit)
     }
