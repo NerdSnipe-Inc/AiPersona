@@ -186,12 +186,52 @@ final class IngestionActorTests: XCTestCase {
         XCTAssertEqual(store.activeFacts().count, 1, "an exact-text repeat must not create a second row")
     }
 
+    /// Regression test for a real production complaint: the same preference getting re-saved every
+    /// conversation with slightly different wording. The exact-text-only dedup this replaces would
+    /// have let this through as a second row; the embedding-similarity check must catch it.
+    @MainActor
+    func test_enqueue_nearDuplicateFact_isNotAddedTwice() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "prefers", factText: "prefers dark mode", embedding: LocalEmbedder.embed("prefers dark mode"))
+
+        let provider = StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "User", objectName: nil, predicate: "prefers", factText: "really likes dark mode", isCorrection: false)
+        ])
+        let episode = ChatEpisode(userText: "Yeah I really like dark mode", assistantText: "Got it.", occurredAt: Date())
+
+        await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+
+        XCTAssertEqual(store.activeFacts().count, 1, "a reworded repeat of an active fact must not create a second row")
+    }
+
+    /// The near-duplicate check must not merge two facts that are merely about the same subject
+    /// and topic area but are genuinely different information — only near-identical wording should
+    /// collapse, per `IngestionActor.duplicateSimilarityThreshold`'s high, deliberately conservative
+    /// bar (mirrors `test_enqueue_correctionFact_withMultipleUnrelatedSubjectOnlyFacts_...` above,
+    /// same principle applied to plain fact addition instead of correction targeting).
+    @MainActor
+    func test_enqueue_unrelatedFact_sharingSubject_isStillAdded() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "prefers", factText: "prefers dark mode", embedding: LocalEmbedder.embed("prefers dark mode"))
+
+        let provider = StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "User", objectName: nil, predicate: "wants", factText: "wants the O-1 visa", isCorrection: false)
+        ])
+        let episode = ChatEpisode(userText: "I want the O-1 visa", assistantText: "Noted.", occurredAt: Date())
+
+        await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+
+        XCTAssertEqual(store.activeFacts().count, 2, "an unrelated fact about the same subject must not be treated as a duplicate")
+    }
+
     /// `knownUserName` lets the model resolve "I"/"me" to the user's real name instead of
     /// extracting a bare pronoun — verifies the episode text actually carries that context.
     @MainActor
     func test_enqueue_knownUserName_isPrependedToEpisodeText() async {
-        final class CapturingProvider: MemoryProvider {
-            var capturedText: String?
+        actor CapturingProvider: MemoryProvider {
+            private(set) var capturedText: String?
             func extractFacts(fromEpisode text: String) async throws -> [ExtractedFact] {
                 capturedText = text
                 return []
@@ -203,7 +243,8 @@ final class IngestionActorTests: XCTestCase {
 
         await IngestionActor.shared.enqueue(episode, provider: provider, store: store, knownUserName: "Daniel")
 
-        XCTAssertEqual(provider.capturedText?.hasPrefix("Known user name: Daniel\n"), true)
+        let capturedText = await provider.capturedText
+        XCTAssertEqual(capturedText?.hasPrefix("Known user name: Daniel\n"), true)
     }
 
     @MainActor

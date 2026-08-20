@@ -35,7 +35,20 @@ public enum ExtractionPromptFormat {
     transient or self-evident that will be stale or meaningless later (the current date, the \
     current time, the weather, "it's currently X o'clock" style exchanges). If nothing meets that \
     bar, respond with an empty array: [] — an empty array is the correct, common answer, not a \
-    fallback.
+    fallback. Most turns produce zero facts; do not strain to find something to extract.
+
+    Do NOT extract: greetings, thanks, acknowledgements ("ok", "got it", "sounds good"); the \
+    user's questions themselves (a question is not a fact about the user); the user's momentary \
+    emotional state or activity right now ("I'm tired", "I'm just browsing") unless they frame it \
+    as a lasting trait or recurring pattern; anything the assistant said or offered to do; or a \
+    restatement of something the episode already told you (a "Known user name: X" line is context, \
+    not a fact to extract about X). If you are unsure whether something will matter next week, \
+    leave it out — an omitted fact costs nothing, a wrong one pollutes memory permanently.
+
+    Only name an entity in "subjectName"/"objectName" when the episode gives you something worth \
+    recording about it — a preference, plan, attribute, or relationship. A name mentioned once in \
+    passing with no attached information ("my coworker Sam said hi") is not itself a fact; do not \
+    invent a thin fact just to justify creating that entity.
 
     Never use a pronoun ("I", "me", "my", "you", "he", "she", "they", "we") as "subjectName" or \
     "objectName" — a pronoun is not a name. If the user's real name is given at the start of this \

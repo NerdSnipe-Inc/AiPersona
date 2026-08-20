@@ -59,6 +59,29 @@ public actor IngestionActor {
         return Self.transientMarkers.contains { lowerText.contains($0) }
     }
 
+    /// Cosine-similarity floor for "this is a reworded repeat of an already-active fact for the
+    /// same subject," not just an exact-text repeat — production usage showed the same preference
+    /// getting re-saved turn after turn with slightly different wording (e.g. "prefers dark mode"
+    /// vs. "really likes dark mode"), which the exact-text-only check below this constant used to
+    /// miss, one of the concrete ways memory accumulated useless duplicate points. Deliberately
+    /// high: this must never merge two facts that are merely on the same TOPIC (e.g. two different
+    /// visa preferences) as if they were the same fact — that's what `MemoryGraphStore
+    /// .invalidateFacts`'s `minimumSimilarity: 0.5` is calibrated for (corrections, where a
+    /// too-low match just no-ops and the correction is surfaced as failed); a false-positive here
+    /// silently drops real information with no such signal. Calibrated against
+    /// `LocalEmbedder`'s real word-vector averaging, not a round number: reworded restatements of
+    /// the same preference measured ~0.89-0.90, unrelated facts sharing the same subject measured
+    /// ~0.35 — 0.85 sits with wide margin below the former and far above the latter.
+    private static let duplicateSimilarityThreshold: Double = 0.85
+
+    /// True if `candidate` (already embedded as `candidateEmbedding`) is either an exact-text
+    /// repeat of `active`, or similar enough per `duplicateSimilarityThreshold` to be the same
+    /// fact restated — the two checks this replaces used to live inline in `enqueue`.
+    private static func isDuplicate(_ active: FactEdge, ofFactText factText: String, embedding candidateEmbedding: [Float]) -> Bool {
+        if active.factText.caseInsensitiveCompare(factText) == .orderedSame { return true }
+        return LocalEmbedder.cosineSimilarity(active.embedding, candidateEmbedding) >= duplicateSimilarityThreshold
+    }
+
     @discardableResult
     public func enqueue(
         _ episode: ChatEpisode, provider: MemoryProvider, store: MemoryGraphStore, knownUserName: String? = nil
@@ -102,10 +125,11 @@ public actor IngestionActor {
                         failedCorrections.append(fact)
                     }
                 } else {
-                    // No dedup in `addFact` itself — an exact-text repeat of an already-active fact
-                    // for this subject is a no-op here rather than a second identical row.
+                    // No dedup in `addFact` itself — an exact-text OR near-duplicate (see
+                    // `duplicateSimilarityThreshold`) repeat of an already-active fact for this
+                    // subject is a no-op here rather than a second, redundant row.
                     let alreadyActive = store.activeFacts().contains {
-                        $0.subjectID == subject.id && $0.factText.caseInsensitiveCompare(fact.factText) == .orderedSame
+                        $0.subjectID == subject.id && Self.isDuplicate($0, ofFactText: fact.factText, embedding: factEmbedding)
                     }
                     if !alreadyActive {
                         store.addFact(
