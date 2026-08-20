@@ -1,10 +1,10 @@
 import Foundation
 
-/// Two-layer retrieval mirroring synapse-cortex: a cached, session-level "compilation" (the most
-/// recent `factLimit` active facts, rebuilt only when a new chat session starts) plus a per-turn
-/// hybrid-search top-up for anything not already in the compilation. Facts beyond the budget are
-/// excluded from the compilation and become retrievable via hybrid search on a later turn — this
-/// is what gives `perTurnMemoryBlock` real work to do.
+/// Two-layer retrieval mirroring synapse-cortex: a cached, session-level "compilation" (the
+/// `factLimit` active facts ranked by subject-entity degree then recency, rebuilt only when a new
+/// chat session starts) plus a per-turn hybrid-search top-up for anything not already in the
+/// compilation. Facts beyond the budget are excluded from the compilation and become retrievable
+/// via hybrid search on a later turn — this is what gives `perTurnMemoryBlock` real work to do.
 @MainActor
 public final class RetrievalService {
     public static let shared = RetrievalService(store: .shared)
@@ -24,8 +24,9 @@ public final class RetrievalService {
 
     public func sessionCompilation() -> String {
         if let cachedCompilation { return cachedCompilation }
-        let facts = store.activeFacts()
-            .sorted { $0.validAt > $1.validAt }
+        let activeFacts = store.activeFacts()
+        let degrees = EntityDegreeRanking.degrees(forActiveFacts: activeFacts)
+        let facts = EntityDegreeRanking.rank(activeFacts, byDegrees: degrees)
             .prefix(factLimit)
             .map(\.factText)
         let compilation = facts.joined(separator: "\n")

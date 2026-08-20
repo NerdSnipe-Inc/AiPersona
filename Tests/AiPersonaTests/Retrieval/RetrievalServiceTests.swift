@@ -63,6 +63,28 @@ final class RetrievalServiceTests: XCTestCase {
         XCTAssertFalse(compilation.contains(oldestText!), "facts beyond the budget should be excluded from the compilation")
     }
 
+    func test_sessionCompilation_favorsWellConnectedEntity_overMoreRecentLoneMention() {
+        let store = MemoryGraphStore(inMemory: true)
+        let alice = store.upsertEntity(name: "Alice", summary: "", kind: .subject, embedding: [])
+        let bob = store.upsertEntity(name: "Bob", summary: "", kind: .subject, embedding: [])
+        let carol = store.upsertEntity(name: "Carol", summary: "", kind: .subject, embedding: [])
+        let dave = store.upsertEntity(name: "Dave", summary: "", kind: .subject, embedding: [])
+
+        // Alice is well-connected: two facts linking her to other entities.
+        store.addFact(subjectID: alice.id, objectID: bob.id, predicate: "knows", factText: "Alice knows Bob", embedding: [])
+        store.addFact(subjectID: alice.id, objectID: carol.id, predicate: "knows", factText: "Alice knows Carol", embedding: [])
+
+        // Dave is a lone, more recently mentioned entity with a single fact.
+        store.addFact(subjectID: dave.id, objectID: nil, predicate: "mentioned", factText: "Dave was mentioned once", embedding: [])
+
+        let service = RetrievalService(store: store, factLimit: 2)
+        let compilation = service.sessionCompilation()
+
+        XCTAssertTrue(compilation.contains("Alice knows Bob"))
+        XCTAssertTrue(compilation.contains("Alice knows Carol"))
+        XCTAssertFalse(compilation.contains("Dave was mentioned once"), "a lone, low-degree entity should lose budget to a well-connected one despite being more recent")
+    }
+
     func test_perTurnMemoryBlock_canReturnFact_excludedFromBudgetedCompilation() {
         let store = MemoryGraphStore(inMemory: true)
         let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
