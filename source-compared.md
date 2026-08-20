@@ -13,8 +13,8 @@ Legend: ✅ Done · 🟡 Partial / simplified · ❌ Not implemented
 |---|---|---|---|
 | 1 | Knowledge Graph Ingestion (session processing, entity resolution, temporal awareness, degree-based filtering) | Session processing ✅, entity resolution 🟡 deterministic fuzzy matching (not LLM-driven), temporal awareness ✅, degree-based filtering ✅ (`EntityDegreeRanking`) | 🟡 Partial |
 | 2 | OpenAI-Compatible Chat Completions (SSE streaming, Gemini backend, system-prompt injection) | Not a chat API by design — prompt-fragment builder only; Gemini backend ✅; system-prompt injection ✅ | ❌ Out of scope (chat API), ✅ Done (injection) |
-| 3 | Smart Context Retrieval / Hydration (two-phase compilation, Cypher-optimized, connectivity-based ranking) | Single-phase fact-limit compilation, no connectivity/degree ranking | 🟡 Partial |
-| 4 | GraphRAG per-turn retrieval (hybrid search + RRF, dedup, automatic gating, zero-LLM overhead) | ✅ Hybrid BM25+embedding RRF, ✅ dedup vs. compilation, ❌ no automatic gating (`is_partial` equivalent), ✅ deterministic no-agent-loop | 🟡 Mostly done |
+| 3 | Smart Context Retrieval / Hydration (two-phase compilation, Cypher-optimized, connectivity-based ranking) | Single-phase fact-limit compilation (not two-phase/Cypher-optimized — no query language here to optimize), connectivity-based ranking ✅ (`EntityDegreeRanking`, added 2026-08-20), no character-budget accounting | 🟡 Partial |
+| 4 | GraphRAG per-turn retrieval (hybrid search + RRF, dedup, automatic gating, zero-LLM overhead) | ✅ Hybrid BM25+embedding RRF, ✅ dedup vs. compilation, ✅ automatic gating (`RetrievalService.isCompilationExhaustive()`, added 2026-08-21), ✅ deterministic no-agent-loop by default (opt-in reranking is the one path that adds an LLM call, and only when a host app explicitly supplies one) | ✅ Done |
 | 5 | Gemini Context Caching (cached prefix, TTL refresh, size-gated, stateless) | ✅ `GeminiCacheClient` (REST against `cachedContents`) + `GeminiContextCacheService` (size-gated via `minimumCacheableCharacters`, TTL refresh on cache hit, stateless caller-supplied client) | ✅ Done |
 | 6 | Knowledge Graph Visualization (React-Force-Graph node/link export, real-time corrections, temporal filtering) | ✅ `GraphVisualizationExport.build(fromEntities:activeFacts:)` maps `EntityNode`/`FactEdge` → `{nodes, links}`, exposed via `MemoryGraphStore.visualizationExport()`. Real-time corrections ✅ (via ingestion), temporal filtering ✅ (`activeFacts()`) | ✅ Done |
 | 7 | Notion Export (graph→Notion pipeline, dynamic schema via Gemini, MCP agent, async+polling, feedback-loop columns, per-request auth) | ✅ `NotionExportService.export` + `NotionClient` — direct REST against `api.notion.com/v1`, fixed schema (not Gemini-dynamic), no MCP agent, synchronous (not async+polling), per-instance bearer token | 🟡 Done, simplified (fixed schema, sync, no polling) |
@@ -56,8 +56,8 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 
 | Feature | synapse-cortex | AiPersona | Status |
 |---|---|---|---|
-| Full context "hydration" (session-level compilation) | ✅ V1 (full dump) / V2 (budget-aware, ~120k chars) | 🟡 `RetrievalService.sessionCompilation()` — most recent `factLimit` (default 20) active facts by `validAt`, cached until `startNewSession()`. No character-budget accounting, single fixed strategy | 🟡 Partial |
-| Per-turn supplemental retrieval (GraphRAG) | ✅ Hybrid semantic + BM25 via Graphiti, dedup vs. hydrated base | ✅ `perTurnMemoryBlock` — hybrid search over facts not already substring-present in the compilation (`RetrievalService.swift:36-51`) | ✅ Done, same shape |
+| Full context "hydration" (session-level compilation) | ✅ V1 (full dump) / V2 (budget-aware, ~120k chars) | 🟡 `RetrievalService.sessionCompilation()` — the `factLimit` (default 20) active facts ranked by subject-entity degree then recency (`EntityDegreeRanking`), cached until `startNewSession()`. Still no character-budget accounting — a fixed fact-count limit, not a fixed char/token budget like V2 | 🟡 Partial (degree-ranked selection now, budget accounting still missing) |
+| Per-turn supplemental retrieval (GraphRAG) | ✅ Hybrid semantic + BM25 via Graphiti, dedup vs. hydrated base | ✅ `perTurnMemoryBlock` — hybrid search over facts not already substring-present in the compilation, gated off by `isCompilationExhaustive()` (`RetrievalService.swift`) | ✅ Done, same shape |
 | BM25 scoring | ✅ (via Graphiti/Neo4j) | ✅ Standard BM25 implemented from scratch, computed fresh per call, no persistent index (`BM25Scorer.swift`) | ✅ Done |
 | Semantic/embedding search | ✅ Gemini `gemini-embedding-001` | 🟡 `NLEmbedding.wordEmbedding` averaged across words, L2-normalized (`LocalEmbedder.swift`) — coarser than a sentence-embedding model, on-device only, no external embedding API used | 🟡 Partial (weaker embedding quality, but zero-setup) |
 | Hybrid fusion method | Graphiti's `HYBRID_SEARCH_RRF` | ✅ Reciprocal Rank Fusion, same formula (`HybridSearch.swift`) | ✅ Done |
@@ -102,7 +102,7 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 
 | Area | synapse-cortex | AiPersona | Status |
 |---|---|---|---|
-| Test coverage | Unknown (not reviewed) | ✅ 14 test files covering every source file 1:1 (Ingestion, Memory, Persona, Providers, Retrieval) | ✅ Present |
+| Test coverage | Unknown (not reviewed) | ✅ 24 test files across Ingestion, Memory, Notion, Persona, Providers, Retrieval; nearly 1:1 with the 26 source files — the two without a dedicated test file are `PersonaKeychain.swift` (thin Keychain wrapper) and `NotionModels.swift` (plain data structs, exercised indirectly via `NotionClientTests`/`NotionExportServiceTests`) | ✅ Present |
 
 ---
 
@@ -115,7 +115,7 @@ Note: the previous pass merged features 7+8 into a single "Notion" row and had n
 | Memory correction / invalidation | 🟡 Partial (conservative, similarity-gated) |
 | Entity resolution / dedup | 🟡 Partial (deterministic fuzzy matching now closes the exact-match gap; still not LLM-driven) |
 | Degree-based entity ranking | ✅ Done (`EntityDegreeRanking`) |
-| Hydration (session compilation) | 🟡 Partial (no character-budget strategy) |
+| Hydration (session compilation) | 🟡 Partial (degree-ranked selection ✅, no character-budget strategy) |
 | Per-turn GraphRAG-style retrieval | ✅ Done |
 | BM25 + embedding hybrid search (RRF) | ✅ Done |
 | Automatic retrieval gating (skip when compilation already covers the graph) | ✅ Done (`isCompilationExhaustive()`) |
