@@ -5,6 +5,28 @@ All notable changes to AiPersona are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `RetrievalService.excludedPredicates` (new, settable post-construction): predicates a host app
+  reserves exclusively for `predicateScopedBlock` are now excluded from
+  `sessionCompilation()`/`perTurnMemoryBlock()`'s general candidate pool. `EntityDegreeRanking`
+  ranks by how many active facts share a subject, and a static reference fact set (all sharing one
+  subject entity) has a degree an order of magnitude higher than any real, organically-grown
+  contact could plausibly reach. Verified live against a real production store: the reference
+  entity had degree 208 vs. the most-connected real contact's 22 — without this exclusion,
+  `sessionCompilation()`'s budget was being filled entirely by reference facts, and real
+  per-contact memory could never win a slot. `perTurnMemoryBlock` had the same unscoped pool, with
+  no lexical-overlap floor to catch a bad match either.
+
+### Added
+- `RetrievalService.contactScopedBlock(forQuery:subjectIDs:limit:)`: hybrid search scoped to an
+  explicit set of subject entity IDs, for a host app that has already identified which entity/
+  entities the current query is about (e.g. a name mention) — instead of ranking across every
+  entity's facts pooled together, which could surface an unrelated entity's fact just because it
+  ranked higher. Returns `nil` for an empty ID set rather than falling back to a graph-wide search.
+  Respects `excludedPredicates`.
+
 ## [1.0.4] - 2026-08-22
 
 ### Added
