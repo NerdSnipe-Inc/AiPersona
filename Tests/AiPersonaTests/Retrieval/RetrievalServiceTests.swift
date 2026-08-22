@@ -301,4 +301,5 @@ final class RetrievalServiceTests: XCTestCase {
         XCTAssertNotNil(block)
         XCTAssertTrue(block!.contains(ruleText))
     }
+
 }

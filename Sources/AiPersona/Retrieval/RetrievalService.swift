@@ -122,8 +122,11 @@ public final class RetrievalService {
         guard !candidateFacts.isEmpty else { return nil }
 
         let documents = candidateFacts.map { EmbeddedDocument(id: $0.id, text: $0.factText, embedding: $0.embedding) }
-        let queryEmbedding = LocalEmbedder.embed(query)
-        var ranked = HybridSearch.searchScored(query: query, queryEmbedding: queryEmbedding, documents: documents, limit: limit)
+        let (queryEmbedding, coverage) = LocalEmbedder.embedWithCoverage(query)
+        var ranked = HybridSearch.searchScored(
+            query: query, queryEmbedding: queryEmbedding, documents: documents, limit: limit,
+            queryEmbeddingCoverage: coverage
+        )
         if requireLexicalOverlap {
             ranked = ranked.filter { $0.sharedContentTerms > 0 }
         }

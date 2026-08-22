@@ -29,38 +29,39 @@ public struct RankedResult {
     public let sharedContentTerms: Int
 }
 
-/// Small, deliberately conservative stopword list — only words common enough to appear in nearly
-/// any English sentence regardless of topic. Not meant to be linguistically complete; it exists
-/// solely to keep `sharedContentTerms` from counting coincidental function-word overlap as
-/// evidence of topical relevance.
-private let contentWordStopwords: Set<String> = [
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "and", "or", "but",
-    "if", "then", "of", "to", "in", "on", "for", "with", "by", "at", "from", "as", "that",
-    "this", "these", "those", "it", "its", "should", "how", "what", "when", "where", "who",
-    "which", "do", "does", "did", "not", "no", "you", "your", "i", "we", "they", "he", "she",
-    "will", "can", "must", "may", "would", "could", "so", "than", "into", "about", "our",
-]
-
-private func contentTerms(_ text: String) -> Set<String> {
-    Set(
-        text.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty && !contentWordStopwords.contains($0) }
-    )
-}
-
 /// Fuses BM25 (Task 7) and embedding-similarity (Task 8) rankings via Reciprocal Rank Fusion —
 /// mirrors Graphiti's `EDGE_HYBRID_SEARCH_RRF`/`NODE_HYBRID_SEARCH_RRF`.
 public enum HybridSearch {
+    /// Below this fraction of a query's words resolving to an in-vocabulary embedding, the
+    /// embedding signal is dropped from fusion entirely rather than down-weighted — see
+    /// `queryEmbeddingCoverage`'s doc comment. Chosen so a query where the *majority* of its words
+    /// are OOV (the "spf/dkim/dmarc/webhook/idempotency" case, all of which resolve to nothing)
+    /// falls back to BM25-only, while a query that's mostly generic words plus one unresolved term
+    /// still gets the benefit of the embedding signal.
+    public static let minimumQueryEmbeddingCoverage = 0.5
+
     public static func search(
-        query: String, queryEmbedding: [Float], documents: [EmbeddedDocument], limit: Int, rrfK: Double = 60
+        query: String, queryEmbedding: [Float], documents: [EmbeddedDocument], limit: Int, rrfK: Double = 60,
+        queryEmbeddingCoverage: Double = 1.0
     ) -> [UUID] {
-        searchScored(query: query, queryEmbedding: queryEmbedding, documents: documents, limit: limit, rrfK: rrfK)
-            .map(\.id)
+        searchScored(
+            query: query, queryEmbedding: queryEmbedding, documents: documents, limit: limit, rrfK: rrfK,
+            queryEmbeddingCoverage: queryEmbeddingCoverage
+        ).map(\.id)
     }
 
+    /// `queryEmbeddingCoverage` is the fraction of `query`'s words that actually resolved to an
+    /// in-vocabulary word vector (see `LocalEmbedder.embedWithCoverage`). Defaults to `1.0` so
+    /// existing callers that don't pass it keep today's behavior unchanged. Below
+    /// `minimumQueryEmbeddingCoverage`, the embedding ranking is excluded from RRF fusion and the
+    /// result is BM25-only — proven directly (packs/ghl-core-v1/reviews/
+    /// live-swift-retrieval-results-2026-08-20/README.md) that BM25 alone already ranks these
+    /// OOV-heavy technical queries (e.g. SPF/DKIM/DMARC, webhook idempotency) correctly, while
+    /// fusing in an embedding built from mostly-missing words drags the fused ranking toward
+    /// whatever leftover generic word happened to resolve, actively burying the correct match.
     public static func searchScored(
-        query: String, queryEmbedding: [Float], documents: [EmbeddedDocument], limit: Int, rrfK: Double = 60
+        query: String, queryEmbedding: [Float], documents: [EmbeddedDocument], limit: Int, rrfK: Double = 60,
+        queryEmbeddingCoverage: Double = 1.0
     ) -> [RankedResult] {
         guard !documents.isEmpty else { return [] }
 
@@ -74,13 +75,16 @@ public enum HybridSearch {
         let bm25ByID = Dictionary(uniqueKeysWithValues: bm25Results.map { ($0.id, $0.score) })
         let bm25Ranked = bm25Results.sorted { $0.score > $1.score }.map(\.id)
 
+        let useEmbeddingSignal = queryEmbeddingCoverage >= minimumQueryEmbeddingCoverage
         let embeddingByID = Dictionary(uniqueKeysWithValues: documents.map {
-            ($0.id, LocalEmbedder.cosineSimilarity(queryEmbedding, $0.embedding))
+            ($0.id, useEmbeddingSignal ? LocalEmbedder.cosineSimilarity(queryEmbedding, $0.embedding) : 0)
         })
-        let embeddingRanked = documents
-            .map { (id: $0.id, score: embeddingByID[$0.id] ?? 0) }
-            .sorted { $0.score > $1.score }
-            .map(\.id)
+        let embeddingRanked = useEmbeddingSignal
+            ? documents
+                .map { (id: $0.id, score: embeddingByID[$0.id] ?? 0) }
+                .sorted { $0.score > $1.score }
+                .map(\.id)
+            : []
 
         var rrfScores: [UUID: Double] = [:]
         for (rank, id) in bm25Ranked.enumerated() {
