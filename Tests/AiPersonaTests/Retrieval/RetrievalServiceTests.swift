@@ -232,6 +232,46 @@ final class RetrievalServiceTests: XCTestCase {
         XCTAssertNotNil(block, "hybrid search should be able to surface a fact excluded from the budgeted compilation")
     }
 
+    func test_contactScopedBlock_onlyReturnsFactsForGivenSubjectIDs() {
+        let store = MemoryGraphStore(inMemory: true)
+        let alice = store.upsertEntity(name: "Alice", summary: "", kind: .subject, embedding: [])
+        let bob = store.upsertEntity(name: "Bob", summary: "", kind: .subject, embedding: [])
+        store.addFact(subjectID: alice.id, objectID: nil, predicate: "likes", factText: "Alice likes dark mode", embedding: LocalEmbedder.embed("Alice likes dark mode"))
+        store.addFact(subjectID: bob.id, objectID: nil, predicate: "likes", factText: "Bob likes light mode", embedding: LocalEmbedder.embed("Bob likes light mode"))
+
+        let service = RetrievalService(store: store)
+        let block = service.contactScopedBlock(forQuery: "mode preference", subjectIDs: [alice.id])
+
+        XCTAssertNotNil(block)
+        XCTAssertTrue(block!.contains("Alice likes dark mode"))
+        XCTAssertFalse(block!.contains("Bob likes light mode"), "must not surface a different entity's facts even on a strong topical match")
+    }
+
+    func test_contactScopedBlock_returnsNil_whenNoSubjectIDsGiven() {
+        let store = MemoryGraphStore(inMemory: true)
+        let alice = store.upsertEntity(name: "Alice", summary: "", kind: .subject, embedding: [])
+        store.addFact(subjectID: alice.id, objectID: nil, predicate: "likes", factText: "Alice likes dark mode", embedding: LocalEmbedder.embed("Alice likes dark mode"))
+
+        let service = RetrievalService(store: store)
+
+        XCTAssertNil(service.contactScopedBlock(forQuery: "dark mode", subjectIDs: []), "no identified contacts must mean no memory context, not a fallback search across everyone")
+    }
+
+    func test_contactScopedBlock_respectsExcludedPredicates() {
+        let store = MemoryGraphStore(inMemory: true)
+        let alice = store.upsertEntity(name: "Alice", summary: "", kind: .subject, embedding: [])
+        let ruleText = "Some reserved reference fact about Alice's plan tier."
+        store.addFact(subjectID: alice.id, objectID: nil, predicate: "reference", factText: ruleText, embedding: LocalEmbedder.embed(ruleText))
+        store.addFact(subjectID: alice.id, objectID: nil, predicate: "likes", factText: "Alice likes dark mode", embedding: LocalEmbedder.embed("Alice likes dark mode"))
+
+        let service = RetrievalService(store: store)
+        service.excludedPredicates = ["reference"]
+        let block = service.contactScopedBlock(forQuery: "Alice", subjectIDs: [alice.id])
+
+        XCTAssertFalse(block?.contains(ruleText) ?? false, "excluded predicates must stay excluded even within a contact-scoped search")
+        XCTAssertTrue(block?.contains("Alice likes dark mode") ?? false)
+    }
+
     func test_predicateScopedBlock_onlyMatchesGivenPredicate() {
         let store = MemoryGraphStore(inMemory: true)
         let subject = store.upsertEntity(name: "Knowledge Base", summary: "", kind: .subject, embedding: [])

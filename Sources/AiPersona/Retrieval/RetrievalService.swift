@@ -128,6 +128,27 @@ public final class RetrievalService {
         return Self.hybridSearchBlock(forQuery: query, over: candidateFacts, limit: limit, requireLexicalOverlap: true)
     }
 
+    /// Hybrid-search scoped to exactly the given `subjectIDs` — lets a host app show only the
+    /// facts belonging to a specific contact/entity (or a small explicit set of them) mentioned in
+    /// the current message, instead of ranking across every entity's facts pooled together. Added
+    /// after a real design gap: `sessionCompilation()`/`perTurnMemoryBlock()` search the *entire*
+    /// graph regardless of which contact (if any) the current message is actually about, so a
+    /// question about one contact could surface an unrelated contact's fact just because it ranked
+    /// higher. A host app should call this only when it has identified specific entities the
+    /// current message is about (e.g. a name mention), and pass no memory context at all when it
+    /// hasn't identified any — this method itself does no such detection, it only scopes the
+    /// search once the caller already knows which entities are in play. `limit` defaults higher
+    /// than `predicateScopedBlock`'s: the goal here is closer to "show what's known about this
+    /// contact" than "top-K most topically relevant," so a typical contact's whole (small) fact set
+    /// should usually fit rather than being trimmed.
+    public func contactScopedBlock(forQuery query: String, subjectIDs: Set<UUID>, limit: Int = 20) -> String? {
+        guard !subjectIDs.isEmpty else { return nil }
+        let candidateFacts = store.activeFacts().filter {
+            subjectIDs.contains($0.subjectID) && !excludedPredicates.contains($0.predicate)
+        }
+        return Self.hybridSearchBlock(forQuery: query, over: candidateFacts, limit: limit)
+    }
+
     /// `requireLexicalOverlap` drops any ranked result with zero non-stopword term overlap with
     /// the query before formatting the block. RRF fusion always returns *something* from a
     /// non-empty candidate pool even when nothing in it is actually relevant, because it only
