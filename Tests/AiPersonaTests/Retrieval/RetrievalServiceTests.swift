@@ -280,6 +280,45 @@ final class RetrievalServiceTests: XCTestCase {
         XCTAssertNil(block, "a candidate with zero literal term overlap with the query must not be surfaced as ground truth")
     }
 
+    func test_sessionCompilation_excludedPredicate_neverCrowdsOutRealContactFacts() {
+        // Regression for a real bug found live in production: EntityDegreeRanking ranks by how
+        // many active facts share a subject, and a static reference set (e.g. product-knowledge
+        // facts all sharing one subject entity) has a degree an order of magnitude higher than any
+        // real contact could plausibly reach — verified directly against the running app's real
+        // store: the knowledge-base entity had degree 208 vs. the most-connected real contact's 22.
+        // Without excludedPredicates, sessionCompilation()'s factLimit budget was being filled
+        // entirely by reference facts, and real contact facts could never win a slot.
+        let store = MemoryGraphStore(inMemory: true)
+        let knowledgeBase = store.upsertEntity(name: "Knowledge Base", summary: "", kind: .subject, embedding: [])
+        for i in 0..<50 {
+            let text = "reference fact \(i)"
+            store.addFact(subjectID: knowledgeBase.id, objectID: nil, predicate: "reference", factText: text, embedding: [])
+        }
+        let contact = store.upsertEntity(name: "Alice", summary: "", kind: .subject, embedding: [])
+        store.addFact(subjectID: contact.id, objectID: nil, predicate: "likes", factText: "Alice likes dark mode", embedding: [])
+
+        let service = RetrievalService(store: store, factLimit: 5)
+        service.excludedPredicates = ["reference"]
+        let compilation = service.sessionCompilation()
+
+        XCTAssertTrue(compilation.contains("Alice likes dark mode"), "a real contact fact must not be crowded out by a high-degree excluded-predicate entity")
+        XCTAssertFalse(compilation.contains("reference fact"), "excluded-predicate facts must never appear in the general contact-memory compilation")
+    }
+
+    func test_perTurnMemoryBlock_excludedPredicate_neverLeaksIntoGenericMemoryContext() {
+        let store = MemoryGraphStore(inMemory: true)
+        let knowledgeBase = store.upsertEntity(name: "Knowledge Base", summary: "", kind: .subject, embedding: [])
+        let ruleText = "Snapshots are versioned deployment artifacts."
+        store.addFact(subjectID: knowledgeBase.id, objectID: nil, predicate: "reference", factText: ruleText, embedding: LocalEmbedder.embed(ruleText))
+
+        let service = RetrievalService(store: store)
+        service.excludedPredicates = ["reference"]
+
+        let block = service.perTurnMemoryBlock(forQuery: "snapshot deployment", excluding: "")
+
+        XCTAssertNil(block, "an excluded-predicate fact must never surface through the generic per-turn memory path, even on a strong topical match")
+    }
+
     func test_predicateScopedBlock_doesNotCompeteWithSessionCompilationBudget() {
         // The whole point of a separate predicate-scoped call: a large pool of contact facts
         // filling sessionCompilation's factLimit must not crowd out product-knowledge retrieval,

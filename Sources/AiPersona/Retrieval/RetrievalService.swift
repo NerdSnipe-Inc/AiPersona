@@ -20,9 +20,32 @@ public final class RetrievalService {
     /// independently, so the two can never disagree about which snapshot they describe.
     private var cachedActiveFactCount: Int?
 
+    /// Predicates reserved exclusively for `predicateScopedBlock` — excluded from
+    /// `sessionCompilation()`/`perTurnMemoryBlock()`'s general contact-memory pool. A host app sets
+    /// this once (e.g. to its product-knowledge predicate) so a static reference fact set never
+    /// competes for the contact-memory budget or leaks into the generic memory context. This
+    /// package stays domain-agnostic — nothing here hardcodes what a "reserved" predicate means,
+    /// the host app declares it.
+    ///
+    /// Added after a real bug found live in production: `EntityDegreeRanking` ranks by how many
+    /// active facts share a subject, and a static reference set (e.g. 208 product-knowledge facts
+    /// all sharing one subject entity) has a degree an order of magnitude higher than any real
+    /// contact could plausibly reach — so without this exclusion, `sessionCompilation()`'s budget
+    /// was being filled entirely by reference facts, and real contact memories could never win a
+    /// slot. `var`, not `let`: `RetrievalService.shared` is a singleton constructed before a host
+    /// app knows its own reserved predicates, so this is set once after construction rather than
+    /// threaded through `init`.
+    public var excludedPredicates: Set<String> = []
+
     public init(store: MemoryGraphStore, factLimit: Int = 20) {
         self.store = store
         self.factLimit = factLimit
+    }
+
+    private func contactMemoryFacts() -> [FactEdge] {
+        excludedPredicates.isEmpty
+            ? store.activeFacts()
+            : store.activeFacts().filter { !excludedPredicates.contains($0.predicate) }
     }
 
     public func startNewSession() {
@@ -32,7 +55,7 @@ public final class RetrievalService {
 
     public func sessionCompilation() -> String {
         if let cachedCompilation { return cachedCompilation }
-        let activeFacts = store.activeFacts()
+        let activeFacts = contactMemoryFacts()
         let degrees = EntityDegreeRanking.degrees(forActiveFacts: activeFacts)
         let facts = EntityDegreeRanking.rank(activeFacts, byDegrees: degrees)
             .prefix(factLimit)
@@ -61,7 +84,7 @@ public final class RetrievalService {
     public func isCompilationExhaustive() -> Bool {
         _ = sessionCompilation()
         guard let cachedActiveFactCount, cachedActiveFactCount <= factLimit else { return false }
-        return store.activeFacts().count == cachedActiveFactCount
+        return contactMemoryFacts().count == cachedActiveFactCount
     }
 
     /// Runs hybrid search over active facts, excluding any whose text is already substring-present
@@ -71,7 +94,7 @@ public final class RetrievalService {
     /// discover the candidate pool is empty.
     public func perTurnMemoryBlock(forQuery query: String, excluding compilationText: String, limit: Int = 5) -> String? {
         guard !isCompilationExhaustive() else { return nil }
-        let candidateFacts = store.activeFacts().filter { !compilationText.contains($0.factText) }
+        let candidateFacts = contactMemoryFacts().filter { !compilationText.contains($0.factText) }
         return Self.hybridSearchBlock(forQuery: query, over: candidateFacts, limit: limit)
     }
 
@@ -84,7 +107,7 @@ public final class RetrievalService {
     /// reranking," never to a corrupted or truncated memory block.
     public func perTurnMemoryBlock(forQuery query: String, excluding compilationText: String, limit: Int = 5, reranker: any Reranker) async -> String? {
         guard !isCompilationExhaustive() else { return nil }
-        let candidateFacts = store.activeFacts().filter { !compilationText.contains($0.factText) }
+        let candidateFacts = contactMemoryFacts().filter { !compilationText.contains($0.factText) }
         guard let block = Self.hybridSearchBlock(forQuery: query, over: candidateFacts, limit: limit) else { return nil }
         let lines = block.components(separatedBy: "\n")
         let reranked = await reranker.rerank(query: query, candidates: lines)
