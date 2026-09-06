@@ -14,10 +14,13 @@ public struct ChatEpisode: Sendable {
     }
 }
 
-/// A correction the model proposed that matched an existing active fact — but that fact is
+/// A correction the model proposed that matched an existing active fact — but that fact (or, on
+/// the object-scoped path, at least one fact in the matched set — see `enqueue`) is
 /// `isUserEdited`, so `enqueue` did NOT invalidate it automatically. A host app surfaces this so
-/// the user can Accept (apply the correction, which also clears the "protected" status — see
-/// `MemoryGraphStore`) or Discard (leave the hand-edited fact exactly as it is).
+/// the user can Accept (most likely by calling `MemoryGraphStore.updateFact` with the corrected
+/// text, or by invalidating `existingFact` and adding a replacement — either way `isUserEdited`
+/// stays `true`, or the row becomes invalid; there is no API that clears it back to `false`) or
+/// Discard (leave the hand-edited fact exactly as it is).
 ///
 /// `existingFact` is a live SwiftData `@Model` reference (`FactEdge`), so despite this type being
 /// marked `Sendable` to cross the `await MainActor.run { }` boundary inside `enqueue`, a
@@ -39,6 +42,15 @@ public struct EnqueueResult: Sendable {
     public let failedCorrections: [ExtractedFact]
     public let pendingReviewCorrections: [PendingCorrection]
 
+    /// True if EITHER `failedCorrections` or `pendingReviewCorrections` is non-empty — i.e. some
+    /// part of this episode needs a human to look at it. Prefer this over spelling out the
+    /// conjunction inline (`result.failedCorrections.isEmpty && result.pendingReviewCorrections
+    /// .isEmpty`): a caller that checks only `failedCorrections` silently drops pending-review
+    /// corrections, exactly the bug this property exists to make hard to reintroduce.
+    public var needsHumanReview: Bool {
+        !failedCorrections.isEmpty || !pendingReviewCorrections.isEmpty
+    }
+
     public init(failedCorrections: [ExtractedFact], pendingReviewCorrections: [PendingCorrection]) {
         self.failedCorrections = failedCorrections
         self.pendingReviewCorrections = pendingReviewCorrections
@@ -56,15 +68,6 @@ public actor IngestionActor {
 
     public init() {}
 
-    /// Extracts facts from `episode` via `provider`, merges/dedupes entities against `store`, and
-    /// either adds a new active fact or invalidates a matching existing one (when `isCorrection`).
-    /// Extraction failures are logged and skipped — never thrown further — since ingestion is a
-    /// background enhancement that must never surface as a user-visible error.
-    ///
-    /// Returns the corrections that matched nothing to invalidate (`MemoryGraphStore.
-    /// invalidateFacts` no-ops rather than guessing wrong). Previously this signal was silently
-    /// dropped; a host app can now inspect the return value to surface e.g. "I'm not sure what to
-    /// update" instead of the correction appearing to do nothing with no explanation.
     /// Pronouns a small on-device model sometimes extracts as a literal "subjectName"/"objectName"
     /// despite being told not to — a code-level backstop, not a substitute for the prompt fix
     /// (`ExtractionPromptFormat.instruction`), since prompt compliance on a 4-bit on-device model
@@ -115,12 +118,13 @@ public actor IngestionActor {
 
     /// Extracts facts from `episode` via `provider`, merges/dedupes entities against `store`, and
     /// either adds a new active fact or invalidates a matching existing one (when `isCorrection`) —
-    /// UNLESS that matching fact is `isUserEdited`, in which case it is left untouched and the
-    /// correction is instead reported via `EnqueueResult.pendingReviewCorrections`, so a host app
-    /// can ask the user rather than silently overwriting a hand-authored/hand-edited fact. See
-    /// `MemoryGraphStore.correctionCandidate`'s doc comment for the underlying matching rules.
-    /// Extraction failures are logged and skipped — never thrown further — since ingestion is a
-    /// background enhancement that must never surface as a user-visible error.
+    /// UNLESS that matching fact (or, on the object-scoped path, any fact in the matched set) is
+    /// `isUserEdited`, in which case it/they are left untouched and the correction is instead
+    /// reported via `EnqueueResult.pendingReviewCorrections`, so a host app can ask the user rather
+    /// than silently overwriting a hand-authored/hand-edited fact. See `MemoryGraphStore
+    /// .correctionCandidate`/`.correctionCandidates`'s doc comments for the underlying matching
+    /// rules. Extraction failures are logged and skipped — never thrown further — since ingestion
+    /// is a background enhancement that must never surface as a user-visible error.
     @discardableResult
     public func enqueue(
         _ episode: ChatEpisode, provider: MemoryProvider, store: MemoryGraphStore, knownUserName: String? = nil
@@ -159,17 +163,40 @@ public actor IngestionActor {
 
                 let factEmbedding = LocalEmbedder.embed(fact.factText)
                 if fact.isCorrection {
-                    guard let candidate = store.correctionCandidate(
-                        subjectID: subject.id, objectID: object?.id, relatedTo: factEmbedding
-                    ) else {
-                        logger.notice("Correction matched nothing to invalidate: \(fact.factText, privacy: .private)")
-                        failedCorrections.append(fact)
-                        continue
-                    }
-                    if candidate.isUserEdited {
-                        pendingReviewCorrections.append(PendingCorrection(extractedFact: fact, existingFact: candidate))
+                    if let objectID = object?.id {
+                        // Object-scoped: match the WHOLE set of active facts for this subject+
+                        // object as one unit, not just one of them — see `correctionCandidates`'s
+                        // doc comment for why a single `.first` match would be both a regression
+                        // (leaving sibling facts active) and nondeterministic (which fact "wins"
+                        // the isUserEdited check when several match).
+                        let matches = store.correctionCandidates(subjectID: subject.id, objectID: objectID)
+                        guard !matches.isEmpty else {
+                            logger.notice("Correction matched nothing to invalidate: \(fact.factText, privacy: .private)")
+                            failedCorrections.append(fact)
+                            continue
+                        }
+                        if matches.contains(where: { $0.isUserEdited }) {
+                            // Any protected fact in the set holds back the WHOLE set — invalidating
+                            // just the non-protected ones would leave a confusing partial state.
+                            for match in matches {
+                                pendingReviewCorrections.append(PendingCorrection(extractedFact: fact, existingFact: match))
+                            }
+                        } else {
+                            for match in matches { store.invalidateFact(id: match.id) }
+                        }
                     } else {
-                        store.invalidateFact(id: candidate.id)
+                        guard let candidate = store.correctionCandidate(
+                            subjectID: subject.id, relatedTo: factEmbedding
+                        ) else {
+                            logger.notice("Correction matched nothing to invalidate: \(fact.factText, privacy: .private)")
+                            failedCorrections.append(fact)
+                            continue
+                        }
+                        if candidate.isUserEdited {
+                            pendingReviewCorrections.append(PendingCorrection(extractedFact: fact, existingFact: candidate))
+                        } else {
+                            store.invalidateFact(id: candidate.id)
+                        }
                     }
                 } else {
                     // No dedup in `addFact` itself — an exact-text OR near-duplicate (see

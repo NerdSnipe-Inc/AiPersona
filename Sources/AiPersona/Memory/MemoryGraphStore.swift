@@ -158,24 +158,37 @@ public final class MemoryGraphStore {
         try? context.save()
     }
 
-    /// Finds the single active fact that a correction (`relatedTo` its embedding) is actually
-    /// about, using the exact same matching rules `invalidateFacts(subjectID:objectID:relatedTo:...)`
-    /// uses to decide what to invalidate — extracted here as a read-only lookup so a caller (e.g.
-    /// `IngestionActor`) can inspect the match (in particular, whether it's `isUserEdited`) BEFORE
-    /// deciding whether to actually invalidate it. Never mutates. See
-    /// `invalidateFacts(subjectID:objectID:relatedTo:...)`'s own (now-delegating) doc comment for
-    /// the full matching-rule rationale.
+    /// Finds the single active fact that a subject-only correction (`relatedTo` its embedding) is
+    /// actually about, using the exact same cosine-similarity matching rule
+    /// `invalidateFacts(subjectID:objectID:relatedTo:...)` uses on its `objectID == nil` path —
+    /// extracted here as a read-only lookup so a caller (e.g. `IngestionActor`) can inspect the
+    /// match (in particular, whether it's `isUserEdited`) BEFORE deciding whether to actually
+    /// invalidate it. Never mutates. See `invalidateFacts(subjectID:objectID:relatedTo:...)`'s own
+    /// (now-delegating) doc comment for the full matching-rule rationale.
+    ///
+    /// For the object-scoped case, see `correctionCandidates(subjectID:objectID:)` instead — that
+    /// path doesn't need scoring, since an explicit object narrows the match exactly.
     public func correctionCandidate(
-        subjectID: UUID, objectID: UUID?, relatedTo correctionEmbedding: [Float],
-        minimumSimilarity: Double = 0.5
+        subjectID: UUID, relatedTo correctionEmbedding: [Float], minimumSimilarity: Double = 0.5
     ) -> FactEdge? {
-        guard let objectID else {
-            let candidates = activeFacts().filter { $0.subjectID == subjectID && $0.objectID == nil }
-            let scored = candidates.map { ($0, LocalEmbedder.cosineSimilarity(correctionEmbedding, $0.embedding)) }
-            guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= minimumSimilarity else { return nil }
-            return best.0
-        }
-        return activeFacts().first { $0.subjectID == subjectID && $0.objectID == objectID }
+        let candidates = activeFacts().filter { $0.subjectID == subjectID && $0.objectID == nil }
+        let scored = candidates.map { ($0, LocalEmbedder.cosineSimilarity(correctionEmbedding, $0.embedding)) }
+        guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= minimumSimilarity else { return nil }
+        return best.0
+    }
+
+    /// Finds EVERY active fact matching `subjectID`+`objectID` exactly — the object-scoped
+    /// counterpart to `correctionCandidate(subjectID:relatedTo:minimumSimilarity:)`. Unlike that
+    /// subject-only path, this doesn't need cosine-similarity scoring: an explicit object narrows
+    /// the match exactly, so this is a plain filter over `activeFacts()`. Deliberately ignores any
+    /// notion of `relatedTo`/`minimumSimilarity` — every fact sharing this exact subject+object is
+    /// considered a match regardless of how similar its text is to the correction.
+    ///
+    /// Returns the WHOLE match set (not just one) so a caller can treat it as a single unit — e.g.
+    /// `IngestionActor.enqueue` checks whether ANY fact in the set is `isUserEdited` before
+    /// invalidating any of them, rather than picking one arbitrarily. Never mutates.
+    public func correctionCandidates(subjectID: UUID, objectID: UUID) -> [FactEdge] {
+        activeFacts().filter { $0.subjectID == subjectID && $0.objectID == objectID }
     }
 
     /// Sets `invalidAt` on the currently-active fact(s) this correction is actually about —
@@ -183,12 +196,13 @@ public final class MemoryGraphStore {
     /// relationship to this object/topic was," not literally the same predicate spelling (e.g.
     /// original predicate `"wants"`, correction predicate `"no longer wants"`), so exact predicate
     /// matching is too fragile for this case. Matching itself lives in `correctionCandidate(
-    /// subjectID:objectID:relatedTo:minimumSimilarity:)`, which this delegates to — see that
-    /// method's doc comment for the full "why cosine similarity, why 0.5" rationale.
+    /// subjectID:relatedTo:minimumSimilarity:)` (subject-only) and `correctionCandidates(
+    /// subjectID:objectID:)` (object-scoped), which this delegates to — see those methods' doc
+    /// comments for the full matching-rule rationale.
     ///
     /// When `objectID` is non-nil, EVERY currently-active fact matching subject+object is
-    /// invalidated (that shape is already narrow enough this stays safe); `correctionCandidate`
-    /// only returns the first for callers that just need to know "is there a match at all."
+    /// invalidated (that shape is already narrow enough this stays safe) — this does NOT duplicate
+    /// `correctionCandidates`'s matching logic, it calls it directly.
     ///
     /// Never deletes, per the bi-temporal design. Returns whether anything was actually
     /// invalidated — the subject-only path can silently no-op (nothing clears
@@ -200,14 +214,14 @@ public final class MemoryGraphStore {
     ) -> Bool {
         guard let objectID else {
             guard let candidate = correctionCandidate(
-                subjectID: subjectID, objectID: nil, relatedTo: correctionEmbedding, minimumSimilarity: minimumSimilarity
+                subjectID: subjectID, relatedTo: correctionEmbedding, minimumSimilarity: minimumSimilarity
             ) else { return false }
             candidate.invalidAt = date
             try? context.save()
             return true
         }
 
-        let matching = activeFacts().filter { $0.subjectID == subjectID && $0.objectID == objectID }
+        let matching = correctionCandidates(subjectID: subjectID, objectID: objectID)
         guard !matching.isEmpty else { return false }
         for fact in matching { fact.invalidAt = date }
         try? context.save()

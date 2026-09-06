@@ -7,6 +7,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `FactEdge.isUserEdited` (defaults `false`, both at the property and `init` level, so an existing
+  on-disk store migrates safely): set once a human hand-authors or hand-edits a fact — via the new
+  `MemoryGraphStore.addFact(isUserEdited:)` parameter, or automatically by `updateFact`, which now
+  sets `isUserEdited = true` as a side effect of any edit. There is no API that clears it back to
+  `false`.
+- `MemoryGraphStore.correctionCandidate(subjectID:relatedTo:minimumSimilarity:)`: read-only,
+  cosine-similarity-scored lookup of the single best-match active fact for a subject-only
+  correction, without mutating anything. `correctionCandidates(subjectID:objectID:)`: read-only
+  lookup of EVERY active fact matching an exact subject+object pair. Both let a caller (in
+  particular `IngestionActor.enqueue`) inspect a correction's match — especially whether it's
+  `isUserEdited` — before deciding whether to invalidate it. `invalidateFacts(subjectID:objectID:
+  relatedTo:...)` now delegates to these instead of duplicating their matching logic.
+- `IngestionActor.EnqueueResult.pendingReviewCorrections: [PendingCorrection]`: corrections that
+  matched an active fact protected by `isUserEdited`. `enqueue` no longer invalidates such a fact
+  automatically — each `PendingCorrection` pairs the proposed `ExtractedFact` with the live
+  `existingFact` so a host app can ask the user to Accept or Discard. `EnqueueResult` also gained
+  `needsHumanReview: Bool`, true when either `failedCorrections` or `pendingReviewCorrections` is
+  non-empty — prefer this over spelling out the conjunction inline.
+
+### Changed
+- **Source-breaking:** `IngestionActor.enqueue(...)` now returns `EnqueueResult` instead of
+  `[ExtractedFact]`. Existing callers that captured the old return value (the list of failed
+  corrections) must switch to `result.failedCorrections`; `NotionCorrectionImportService` and the
+  README have been updated as the reference migration.
+- `IngestionActor.enqueue`'s object-scoped correction handling (`objectName` set) now matches and
+  acts on the WHOLE set of active facts sharing that subject+object, not a single arbitrary match:
+  if any fact in the set is `isUserEdited`, none are invalidated and all are reported via
+  `pendingReviewCorrections`; otherwise all are invalidated. This restores the pre-`isUserEdited`
+  behavior of invalidating every matching fact (a prior in-progress version of this feature
+  regressed to invalidating only one, nondeterministically, when several facts matched).
+
 ### Fixed
 - `RetrievalService.excludedPredicates` (new, settable post-construction): predicates a host app
   reserves exclusively for `predicateScopedBlock` are now excluded from

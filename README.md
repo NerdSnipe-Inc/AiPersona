@@ -130,16 +130,30 @@ correction silently doing nothing.
 
 ```swift
 let episode = ChatEpisode(userText: "I prefer short answers", assistantText: "Got it.", occurredAt: .now)
-let failedCorrections = await IngestionActor.shared.enqueue(episode, provider: someMemoryProvider, store: .shared)
+let result = await IngestionActor.shared.enqueue(episode, provider: someMemoryProvider, store: .shared)
 ```
 
 Runs extraction via a `MemoryProvider`, merges/dedupes entities, and adds or invalidates facts.
 It's a Swift `actor`, so concurrent `enqueue` calls against `.shared` are naturally serialized —
 that also protects against extraction-provider rate limits without any extra concurrency-limiting
 code. Extraction failures are logged and swallowed (ingestion is a background enhancement, never
-something that should surface as a user-facing error). The return value is the list of
-corrections that matched nothing to invalidate — call sites can use this to tell the user their
-correction didn't land, instead of it disappearing silently.
+something that should surface as a user-facing error).
+
+`enqueue` returns an `EnqueueResult` with two lists, either of which means "a human should look at
+this episode" (also exposed as the single `result.needsHumanReview` convenience property):
+
+- `failedCorrections: [ExtractedFact]` — corrections that matched nothing to invalidate at all.
+  Call sites can use this to tell the user their correction didn't land, instead of it
+  disappearing silently.
+- `pendingReviewCorrections: [PendingCorrection]` — corrections that DID match an existing active
+  fact, but that fact (or, when the correction names an object, one of the facts sharing that
+  exact subject+object) is `isUserEdited` — i.e. a human previously hand-authored or hand-edited
+  it via `MemoryGraphStore.addFact(isUserEdited:)`/`.updateFact`. `enqueue` deliberately does NOT
+  invalidate a protected fact automatically; instead each `PendingCorrection` pairs the proposed
+  `extractedFact` with the live `existingFact` `FactEdge` so a host app can ask the user to Accept
+  (apply the correction — most likely via `updateFact` or an invalidate-and-replace, either of
+  which leaves `isUserEdited` `true` or the row invalid; there's no API that clears it back to
+  `false`) or Discard (leave the hand-edited fact untouched).
 
 ### Retrieval: `RetrievalService`
 
@@ -248,8 +262,11 @@ let failedRows = try await NotionCorrectionImportService.importCorrections(
 Export creates a Notion database (fixed schema: name, kind, fact, valid-from, needs-review,
 correction-notes) and one page per active fact. Import queries rows flagged "Needs Review",
 routes each row's "Correction Notes" text through `IngestionActor.enqueue` (reused as-is, not
-reimplemented) as a synthetic chat turn, clears the flag on success, and returns the rows that
-matched nothing so they aren't silently marked resolved.
+reimplemented) as a synthetic chat turn, and clears the flag only on a row whose correction fully
+applied. A row is left flagged — and returned in `failedRows` — when its `EnqueueResult` reports
+either a failed correction (matched nothing to invalidate) or a pending-review correction (matched
+an `isUserEdited` fact `enqueue` deliberately left alone), so neither case is silently marked
+resolved.
 
 ### Knowledge graph visualization
 

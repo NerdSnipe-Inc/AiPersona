@@ -201,10 +201,24 @@ final class MemoryGraphStoreTests: XCTestCase {
         let embedding = LocalEmbedder.embed("wants the O-1 visa")
         store.addFact(subjectID: user.id, objectID: nil, predicate: "wants", factText: "wants the O-1 visa", embedding: embedding)
 
-        let candidate = store.correctionCandidate(subjectID: user.id, objectID: nil, relatedTo: embedding)
+        let candidate = store.correctionCandidate(subjectID: user.id, relatedTo: embedding)
 
         XCTAssertEqual(candidate?.factText, "wants the O-1 visa")
         XCTAssertEqual(store.activeFacts().count, 1, "correctionCandidate must not invalidate anything")
+    }
+
+    @MainActor
+    func test_correctionCandidates_returnsAllMatchesForSubjectAndObjectWithoutMutating() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        let visa = store.upsertEntity(name: "O-1 visa", summary: "A visa category.", kind: .subject, embedding: [])
+        store.addFact(subjectID: user.id, objectID: visa.id, predicate: "wants", factText: "wants the O-1 visa", embedding: [])
+        store.addFact(subjectID: user.id, objectID: visa.id, predicate: "is applying for", factText: "is applying for the O-1 visa", embedding: [])
+
+        let candidates = store.correctionCandidates(subjectID: user.id, objectID: visa.id)
+
+        XCTAssertEqual(candidates.count, 2)
+        XCTAssertEqual(store.activeFacts().count, 2, "correctionCandidates must not invalidate anything")
     }
 
     @MainActor

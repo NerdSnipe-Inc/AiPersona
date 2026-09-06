@@ -87,7 +87,7 @@ public final class FactEdge: Identifiable {
     /// reported as a pending review (see `IngestionActor.PendingCorrection`) so a host app can ask
     /// the user, rather than silently overwriting something they specifically corrected. Defaults
     /// `false` so every existing/AI-authored fact is unaffected.
-    public var isUserEdited: Bool
+    public var isUserEdited: Bool = false
 
     public var subjectID: UUID {
         get {

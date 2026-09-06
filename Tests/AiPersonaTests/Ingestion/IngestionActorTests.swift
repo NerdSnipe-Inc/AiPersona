@@ -283,4 +283,82 @@ final class IngestionActorTests: XCTestCase {
         XCTAssertEqual(result.pendingReviewCorrections.first?.extractedFact.factText, "no longer wants the O-1 visa")
         XCTAssertTrue(result.failedCorrections.isEmpty, "this matched something — it's pending review, not a failed/no-match correction")
     }
+
+    // MARK: - Object-scoped corrections (objectName set)
+
+    /// (a) Object-scoped correction matching a single non-user-edited fact must invalidate it —
+    /// mirrors the old `invalidateFacts(subjectID:objectID:...)` behavior this branch must restore.
+    @MainActor
+    func test_enqueue_objectScopedCorrection_matchingNonUserEditedFact_invalidatesIt() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        let visa = store.upsertEntity(name: "O-1 visa", summary: "A visa category.", kind: .subject, embedding: [])
+        store.addFact(subjectID: user.id, objectID: visa.id, predicate: "wants", factText: "wants the O-1 visa", embedding: [])
+
+        let provider = StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "User", objectName: "O-1 visa", predicate: "no longer wants", factText: "no longer wants the O-1 visa", isCorrection: true)
+        ])
+        let episode = ChatEpisode(userText: "Actually I don't want the O-1 visa anymore", assistantText: "Noted.", occurredAt: Date())
+
+        let result = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+
+        XCTAssertEqual(store.activeFacts().count, 0)
+        XCTAssertTrue(result.pendingReviewCorrections.isEmpty)
+        XCTAssertTrue(result.failedCorrections.isEmpty)
+    }
+
+    /// (b) Object-scoped correction matching a user-edited fact must NOT invalidate it and must
+    /// report it as pending review — this is the exact regression finding #1 describes: the old
+    /// `.first` match made this nondeterministic when multiple facts matched.
+    @MainActor
+    func test_enqueue_objectScopedCorrection_matchingUserEditedFact_doesNotInvalidateIt_reportsPendingReview() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        let visa = store.upsertEntity(name: "O-1 visa", summary: "A visa category.", kind: .subject, embedding: [])
+        store.addFact(
+            subjectID: user.id, objectID: visa.id, predicate: "wants", factText: "wants the O-1 visa",
+            embedding: [], isUserEdited: true
+        )
+
+        let provider = StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "User", objectName: "O-1 visa", predicate: "no longer wants", factText: "no longer wants the O-1 visa", isCorrection: true)
+        ])
+        let episode = ChatEpisode(userText: "Actually I don't want the O-1 visa anymore", assistantText: "Noted.", occurredAt: Date())
+
+        let result = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+
+        XCTAssertEqual(store.activeFacts().count, 1, "a user-edited fact must never be silently invalidated")
+        XCTAssertEqual(result.pendingReviewCorrections.count, 1)
+        XCTAssertEqual(result.pendingReviewCorrections.first?.existingFact.factText, "wants the O-1 visa")
+        XCTAssertTrue(result.failedCorrections.isEmpty)
+    }
+
+    /// (c) Object-scoped correction matching MULTIPLE active facts, some user-edited and some not:
+    /// if ANY is user-edited, NONE are invalidated and ALL are reported pending-review — invalidating
+    /// just the non-protected ones would leave a confusing partial state.
+    @MainActor
+    func test_enqueue_objectScopedCorrection_matchingMultipleFacts_someUserEdited_invalidatesNoneAndReportsAllPending() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        let visa = store.upsertEntity(name: "O-1 visa", summary: "A visa category.", kind: .subject, embedding: [])
+        store.addFact(
+            subjectID: user.id, objectID: visa.id, predicate: "wants", factText: "wants the O-1 visa",
+            embedding: [], isUserEdited: true
+        )
+        store.addFact(
+            subjectID: user.id, objectID: visa.id, predicate: "is applying for", factText: "is applying for the O-1 visa",
+            embedding: [], isUserEdited: false
+        )
+
+        let provider = StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "User", objectName: "O-1 visa", predicate: "no longer wants", factText: "no longer wants the O-1 visa", isCorrection: true)
+        ])
+        let episode = ChatEpisode(userText: "Actually I don't want the O-1 visa anymore", assistantText: "Noted.", occurredAt: Date())
+
+        let result = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+
+        XCTAssertEqual(store.activeFacts().count, 2, "no fact in the matched set should be invalidated when any of them is user-edited")
+        XCTAssertEqual(result.pendingReviewCorrections.count, 2, "every fact in the matched set should be reported pending review")
+        XCTAssertTrue(result.failedCorrections.isEmpty)
+    }
 }
