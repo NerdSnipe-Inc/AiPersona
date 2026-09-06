@@ -81,6 +81,13 @@ public final class FactEdge: Identifiable {
     public var embedding: [Float]
     public var validAt: Date
     public var invalidAt: Date?
+    /// Once a human hand-authors or hand-edits this specific fact (see `MemoryGraphStore.addFact`'s
+    /// `isUserEdited` parameter and `.updateFact`), this is `true` and `IngestionActor.enqueue`
+    /// will never invalidate it automatically — a matching AI-extracted correction is instead
+    /// reported as a pending review (see `IngestionActor.PendingCorrection`) so a host app can ask
+    /// the user, rather than silently overwriting something they specifically corrected. Defaults
+    /// `false` so every existing/AI-authored fact is unaffected.
+    public var isUserEdited: Bool
 
     public var subjectID: UUID {
         get {
@@ -105,7 +112,7 @@ public final class FactEdge: Identifiable {
 
     public init(
         id: UUID = UUID(), subjectID: UUID, objectID: UUID?, predicate: String, factText: String,
-        embedding: [Float], validAt: Date, invalidAt: Date? = nil
+        embedding: [Float], validAt: Date, invalidAt: Date? = nil, isUserEdited: Bool = false
     ) {
         self.id = id
         self.subjectIDString = subjectID.uuidString
@@ -115,5 +122,6 @@ public final class FactEdge: Identifiable {
         self.embedding = embedding
         self.validAt = validAt
         self.invalidAt = invalidAt
+        self.isUserEdited = isUserEdited
     }
 }
