@@ -158,31 +158,6 @@ public final class MemoryGraphStore {
         try? context.save()
     }
 
-    /// Sets `invalidAt` on the currently-active fact(s) this correction is actually about —
-    /// regardless of the exact predicate string. A correction is about "whatever this subject's
-    /// relationship to this object/topic was," not literally the same predicate spelling (e.g.
-    /// original predicate `"wants"`, correction predicate `"no longer wants"`), so exact predicate
-    /// matching is too fragile for this case.
-    ///
-    /// When `objectID` is non-nil: matches subject+object exactly and invalidates every active fact
-    /// that matches — this shape is already narrow (a distinct object entity scopes the correction
-    /// unambiguously), so all matches are invalidated as before.
-    ///
-    /// When `objectID` is nil (the common "subject-only fact" case, like "User prefers X"): nearly
-    /// all of a user's personal facts share the same subject entity, so blindly invalidating every
-    /// active subject-only fact would silently wipe out unrelated facts (e.g. a correction about a
-    /// visa preference would also invalidate an unrelated "prefers dark mode" fact). Instead, among
-    /// active subject-only facts, invalidate only the SINGLE most semantically similar one to
-    /// `correctionEmbedding` (by cosine similarity of `LocalEmbedder`-produced embeddings) — and
-    /// only if it clears `minimumSimilarity`. If nothing clears the bar, invalidate nothing: an
-    /// unrelated correction should silently no-op rather than guess wrong and destroy data.
-    ///
-    /// Never deletes, per the bi-temporal design.
-    ///
-    /// Returns whether anything was actually invalidated. The subject-only path can silently
-    /// no-op (nothing clears `minimumSimilarity`) by design — the caller (e.g. `IngestionActor`)
-    /// uses this to log or surface "I'm not sure what to update" instead of the failure being
-    /// invisible.
     /// Finds the single active fact that a correction (`relatedTo` its embedding) is actually
     /// about, using the exact same matching rules `invalidateFacts(subjectID:objectID:relatedTo:...)`
     /// uses to decide what to invalidate — extracted here as a read-only lookup so a caller (e.g.
