@@ -193,4 +193,42 @@ final class MemoryGraphStoreTests: XCTestCase {
         XCTAssertEqual(store.allFacts().count, 0)
         XCTAssertEqual(store.allEpisodes().count, 0)
     }
+
+    @MainActor
+    func test_correctionCandidate_returnsBestMatchWithoutMutating() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        let embedding = LocalEmbedder.embed("wants the O-1 visa")
+        store.addFact(subjectID: user.id, objectID: nil, predicate: "wants", factText: "wants the O-1 visa", embedding: embedding)
+
+        let candidate = store.correctionCandidate(subjectID: user.id, objectID: nil, relatedTo: embedding)
+
+        XCTAssertEqual(candidate?.factText, "wants the O-1 visa")
+        XCTAssertEqual(store.activeFacts().count, 1, "correctionCandidate must not invalidate anything")
+    }
+
+    @MainActor
+    func test_addFact_withIsUserEdited_setsFlag() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+
+        let fact = store.addFact(
+            subjectID: user.id, objectID: nil, predicate: "manual",
+            factText: "hand-added fact", embedding: [], isUserEdited: true
+        )
+
+        XCTAssertTrue(fact.isUserEdited)
+    }
+
+    @MainActor
+    func test_updateFact_setsIsUserEditedTrue() {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        let fact = store.addFact(subjectID: user.id, objectID: nil, predicate: "wants", factText: "original", embedding: [])
+        XCTAssertFalse(fact.isUserEdited)
+
+        _ = store.updateFact(id: fact.id, factText: "corrected by hand")
+
+        XCTAssertTrue(store.allFacts().first { $0.id == fact.id }!.isUserEdited)
+    }
 }

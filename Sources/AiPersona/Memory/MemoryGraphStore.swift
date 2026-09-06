@@ -138,11 +138,12 @@ public final class MemoryGraphStore {
 
     @discardableResult
     public func addFact(
-        subjectID: UUID, objectID: UUID?, predicate: String, factText: String, embedding: [Float]
+        subjectID: UUID, objectID: UUID?, predicate: String, factText: String, embedding: [Float],
+        isUserEdited: Bool = false
     ) -> FactEdge {
         let fact = FactEdge(
             subjectID: subjectID, objectID: objectID, predicate: predicate, factText: factText,
-            embedding: embedding, validAt: Date()
+            embedding: embedding, validAt: Date(), isUserEdited: isUserEdited
         )
         context.insert(fact)
         try? context.save()
@@ -182,16 +183,51 @@ public final class MemoryGraphStore {
     /// no-op (nothing clears `minimumSimilarity`) by design — the caller (e.g. `IngestionActor`)
     /// uses this to log or surface "I'm not sure what to update" instead of the failure being
     /// invisible.
+    /// Finds the single active fact that a correction (`relatedTo` its embedding) is actually
+    /// about, using the exact same matching rules `invalidateFacts(subjectID:objectID:relatedTo:...)`
+    /// uses to decide what to invalidate — extracted here as a read-only lookup so a caller (e.g.
+    /// `IngestionActor`) can inspect the match (in particular, whether it's `isUserEdited`) BEFORE
+    /// deciding whether to actually invalidate it. Never mutates. See
+    /// `invalidateFacts(subjectID:objectID:relatedTo:...)`'s own (now-delegating) doc comment for
+    /// the full matching-rule rationale.
+    public func correctionCandidate(
+        subjectID: UUID, objectID: UUID?, relatedTo correctionEmbedding: [Float],
+        minimumSimilarity: Double = 0.5
+    ) -> FactEdge? {
+        guard let objectID else {
+            let candidates = activeFacts().filter { $0.subjectID == subjectID && $0.objectID == nil }
+            let scored = candidates.map { ($0, LocalEmbedder.cosineSimilarity(correctionEmbedding, $0.embedding)) }
+            guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= minimumSimilarity else { return nil }
+            return best.0
+        }
+        return activeFacts().first { $0.subjectID == subjectID && $0.objectID == objectID }
+    }
+
+    /// Sets `invalidAt` on the currently-active fact(s) this correction is actually about —
+    /// regardless of the exact predicate string. A correction is about "whatever this subject's
+    /// relationship to this object/topic was," not literally the same predicate spelling (e.g.
+    /// original predicate `"wants"`, correction predicate `"no longer wants"`), so exact predicate
+    /// matching is too fragile for this case. Matching itself lives in `correctionCandidate(
+    /// subjectID:objectID:relatedTo:minimumSimilarity:)`, which this delegates to — see that
+    /// method's doc comment for the full "why cosine similarity, why 0.5" rationale.
+    ///
+    /// When `objectID` is non-nil, EVERY currently-active fact matching subject+object is
+    /// invalidated (that shape is already narrow enough this stays safe); `correctionCandidate`
+    /// only returns the first for callers that just need to know "is there a match at all."
+    ///
+    /// Never deletes, per the bi-temporal design. Returns whether anything was actually
+    /// invalidated — the subject-only path can silently no-op (nothing clears
+    /// `minimumSimilarity`) by design.
     @discardableResult
     public func invalidateFacts(
         subjectID: UUID, objectID: UUID?, relatedTo correctionEmbedding: [Float],
         minimumSimilarity: Double = 0.5, at date: Date = Date()
     ) -> Bool {
         guard let objectID else {
-            let candidates = activeFacts().filter { $0.subjectID == subjectID && $0.objectID == nil }
-            let scored = candidates.map { ($0, LocalEmbedder.cosineSimilarity(correctionEmbedding, $0.embedding)) }
-            guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= minimumSimilarity else { return false }
-            best.0.invalidAt = date
+            guard let candidate = correctionCandidate(
+                subjectID: subjectID, objectID: nil, relatedTo: correctionEmbedding, minimumSimilarity: minimumSimilarity
+            ) else { return false }
+            candidate.invalidAt = date
             try? context.save()
             return true
         }
@@ -269,13 +305,16 @@ public final class MemoryGraphStore {
     }
 
     /// Edits a fact's text in place — a direct correction, for a UI that lets a user fix a
-    /// mis-extracted fact's wording without invalidating it and losing the edge's history. Use
+    /// mis-extracted fact's wording without invalidating it and losing the edge's history. Always
+    /// marks the fact `isUserEdited` — an edit is unambiguously a human action, and this is the
+    /// signal `IngestionActor.enqueue` uses to stop auto-merging future AI corrections onto it. Use
     /// `invalidateFact` instead when the fact is simply wrong and should stop being active.
     /// Returns `false` (no-op) if no fact with that `id` exists.
     @discardableResult
     public func updateFact(id: UUID, factText: String) -> Bool {
         guard let fact = allFacts().first(where: { $0.id == id }) else { return false }
         fact.factText = factText
+        fact.isUserEdited = true
         try? context.save()
         return true
     }
