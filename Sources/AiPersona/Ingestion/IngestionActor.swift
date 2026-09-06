@@ -18,6 +18,12 @@ public struct ChatEpisode: Sendable {
 /// `isUserEdited`, so `enqueue` did NOT invalidate it automatically. A host app surfaces this so
 /// the user can Accept (apply the correction, which also clears the "protected" status — see
 /// `MemoryGraphStore`) or Discard (leave the hand-edited fact exactly as it is).
+///
+/// `existingFact` is a live SwiftData `@Model` reference (`FactEdge`), so despite this type being
+/// marked `Sendable` to cross the `await MainActor.run { }` boundary inside `enqueue`, a
+/// `PendingCorrection` must only be read or acted upon back on `@MainActor` — exactly where
+/// `enqueue` constructs it and where `MemoryGraphStore`'s mutating APIs (e.g. to Accept/Discard)
+/// must be called.
 public struct PendingCorrection: Sendable {
     public let extractedFact: ExtractedFact
     public let existingFact: FactEdge

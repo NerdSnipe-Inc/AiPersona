@@ -49,4 +49,29 @@ final class NotionCorrectionImportServiceTests: XCTestCase {
         let clearedIDs = await client.clearedNeedsReviewPageIDs
         XCTAssertEqual(clearedIDs, [])
     }
+
+    func test_importCorrections_leavesNeedsReviewSet_whenCorrectionMatchesAUserEditedFact() async throws {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        store.addFact(
+            subjectID: user.id, objectID: nil, predicate: "wants", factText: "wants the O-1 visa",
+            embedding: LocalEmbedder.embed("wants the O-1 visa"), isUserEdited: true
+        )
+
+        let client = StubNotionAPIClient()
+        let row = NotionCorrectionRow(pageID: "page-3", subjectName: "User", correctionNotes: "no longer wants the O-1 visa")
+        await client.setNeedsReviewRowsToReturn([row])
+        let provider = StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "User", objectName: nil, predicate: "no longer wants", factText: "no longer wants the O-1 visa", isCorrection: true)
+        ])
+
+        let failedRows = try await NotionCorrectionImportService.importCorrections(
+            client: client, provider: provider, store: store, databaseID: "db-1"
+        )
+
+        XCTAssertEqual(failedRows, [row], "a correction pending human review must stay flagged, not be silently cleared")
+        let clearedIDs = await client.clearedNeedsReviewPageIDs
+        XCTAssertEqual(clearedIDs, [], "the user-edited fact's protection must not be silently bypassed via the Notion import path")
+        XCTAssertEqual(store.activeFacts().count, 1, "the user-edited fact must remain untouched")
+    }
 }
