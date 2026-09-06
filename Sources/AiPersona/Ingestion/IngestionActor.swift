@@ -14,6 +14,31 @@ public struct ChatEpisode: Sendable {
     }
 }
 
+/// A correction the model proposed that matched an existing active fact — but that fact is
+/// `isUserEdited`, so `enqueue` did NOT invalidate it automatically. A host app surfaces this so
+/// the user can Accept (apply the correction, which also clears the "protected" status — see
+/// `MemoryGraphStore`) or Discard (leave the hand-edited fact exactly as it is).
+public struct PendingCorrection: Sendable {
+    public let extractedFact: ExtractedFact
+    public let existingFact: FactEdge
+
+    public init(extractedFact: ExtractedFact, existingFact: FactEdge) {
+        self.extractedFact = extractedFact
+        self.existingFact = existingFact
+    }
+}
+
+/// `enqueue`'s full outcome — see that method's doc comment.
+public struct EnqueueResult: Sendable {
+    public let failedCorrections: [ExtractedFact]
+    public let pendingReviewCorrections: [PendingCorrection]
+
+    public init(failedCorrections: [ExtractedFact], pendingReviewCorrections: [PendingCorrection]) {
+        self.failedCorrections = failedCorrections
+        self.pendingReviewCorrections = pendingReviewCorrections
+    }
+}
+
 /// Background fact extraction + graph merge, invoked after each chat turn. `enqueue` is `async`
 /// so callers control fire-and-forget vs. awaiting (tests await directly; a host app's production
 /// call site wraps it in `Task { await ... }`) — a single local process needs no more than a
@@ -82,10 +107,18 @@ public actor IngestionActor {
         return LocalEmbedder.cosineSimilarity(active.embedding, candidateEmbedding) >= duplicateSimilarityThreshold
     }
 
+    /// Extracts facts from `episode` via `provider`, merges/dedupes entities against `store`, and
+    /// either adds a new active fact or invalidates a matching existing one (when `isCorrection`) —
+    /// UNLESS that matching fact is `isUserEdited`, in which case it is left untouched and the
+    /// correction is instead reported via `EnqueueResult.pendingReviewCorrections`, so a host app
+    /// can ask the user rather than silently overwriting a hand-authored/hand-edited fact. See
+    /// `MemoryGraphStore.correctionCandidate`'s doc comment for the underlying matching rules.
+    /// Extraction failures are logged and skipped — never thrown further — since ingestion is a
+    /// background enhancement that must never surface as a user-visible error.
     @discardableResult
     public func enqueue(
         _ episode: ChatEpisode, provider: MemoryProvider, store: MemoryGraphStore, knownUserName: String? = nil
-    ) async -> [ExtractedFact] {
+    ) async -> EnqueueResult {
         let baseEpisodeText = "user: \(episode.userText)\nassistant: \(episode.assistantText)"
         let episodeText: String = if let knownUserName, !knownUserName.isEmpty {
             "Known user name: \(knownUserName)\n" + baseEpisodeText
@@ -98,16 +131,17 @@ public actor IngestionActor {
             facts = try await provider.extractFacts(fromEpisode: episodeText)
         } catch {
             logger.error("Extraction failed, skipping episode: \(error.localizedDescription)")
-            return []
+            return EnqueueResult(failedCorrections: [], pendingReviewCorrections: [])
         }
-        guard !facts.isEmpty else { return [] }
+        guard !facts.isEmpty else { return EnqueueResult(failedCorrections: [], pendingReviewCorrections: []) }
         let cleanFacts = facts.filter { !Self.isJunk($0) }
-        guard !cleanFacts.isEmpty else { return [] }
+        guard !cleanFacts.isEmpty else { return EnqueueResult(failedCorrections: [], pendingReviewCorrections: []) }
 
         return await MainActor.run {
             _ = store.addEpisode(rawText: episodeText, summary: episodeText.prefix(200).description, occurredAt: episode.occurredAt)
 
             var failedCorrections: [ExtractedFact] = []
+            var pendingReviewCorrections: [PendingCorrection] = []
             for fact in cleanFacts {
                 let subject = store.upsertEntity(
                     name: fact.subjectName, summary: fact.subjectName, kind: .user,
@@ -119,10 +153,17 @@ public actor IngestionActor {
 
                 let factEmbedding = LocalEmbedder.embed(fact.factText)
                 if fact.isCorrection {
-                    let didInvalidate = store.invalidateFacts(subjectID: subject.id, objectID: object?.id, relatedTo: factEmbedding)
-                    if !didInvalidate {
+                    guard let candidate = store.correctionCandidate(
+                        subjectID: subject.id, objectID: object?.id, relatedTo: factEmbedding
+                    ) else {
                         logger.notice("Correction matched nothing to invalidate: \(fact.factText, privacy: .private)")
                         failedCorrections.append(fact)
+                        continue
+                    }
+                    if candidate.isUserEdited {
+                        pendingReviewCorrections.append(PendingCorrection(extractedFact: fact, existingFact: candidate))
+                    } else {
+                        store.invalidateFact(id: candidate.id)
                     }
                 } else {
                     // No dedup in `addFact` itself — an exact-text OR near-duplicate (see
@@ -139,7 +180,7 @@ public actor IngestionActor {
                     }
                 }
             }
-            return failedCorrections
+            return EnqueueResult(failedCorrections: failedCorrections, pendingReviewCorrections: pendingReviewCorrections)
         }
     }
 }

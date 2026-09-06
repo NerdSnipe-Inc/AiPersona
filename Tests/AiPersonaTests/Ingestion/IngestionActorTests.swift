@@ -97,9 +97,9 @@ final class IngestionActorTests: XCTestCase {
         let provider = StubMemoryProvider(facts: [correction])
         let episode = ChatEpisode(userText: "I no longer want that", assistantText: "Noted.", occurredAt: Date())
 
-        let failedCorrections = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+        let result = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
 
-        XCTAssertEqual(failedCorrections, [correction], "a correction with nothing to invalidate must be surfaced, not silently dropped")
+        XCTAssertEqual(result.failedCorrections, [correction], "a correction with nothing to invalidate must be surfaced, not silently dropped")
     }
 
     @MainActor
@@ -113,9 +113,9 @@ final class IngestionActorTests: XCTestCase {
         ])
         let episode = ChatEpisode(userText: "Actually I don't want that anymore", assistantText: "Noted.", occurredAt: Date())
 
-        let failedCorrections = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+        let result = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
 
-        XCTAssertEqual(failedCorrections, [])
+        XCTAssertEqual(result.failedCorrections, [])
     }
 
     /// Regression test for a real production bug: the on-device extractor sometimes returns "I" as
@@ -258,5 +258,29 @@ final class IngestionActorTests: XCTestCase {
         await IngestionActor.shared.enqueue(episode, provider: ThrowingProvider(), store: store)
 
         XCTAssertEqual(store.allFacts().count, 0)
+    }
+
+    @MainActor
+    func test_enqueue_correctionMatchingUserEditedFact_doesNotInvalidateIt_reportsPendingReview() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let user = store.upsertEntity(name: "User", summary: "The app's user.", kind: .user, embedding: [])
+        let embedding = LocalEmbedder.embed("wants the O-1 visa")
+        store.addFact(
+            subjectID: user.id, objectID: nil, predicate: "wants", factText: "wants the O-1 visa",
+            embedding: embedding, isUserEdited: true
+        )
+
+        let provider = StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "User", objectName: nil, predicate: "no longer wants", factText: "no longer wants the O-1 visa", isCorrection: true)
+        ])
+        let episode = ChatEpisode(userText: "Actually I don't want that anymore", assistantText: "Noted.", occurredAt: Date())
+
+        let result = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+
+        XCTAssertEqual(store.activeFacts().count, 1, "a user-edited fact must never be silently invalidated")
+        XCTAssertEqual(result.pendingReviewCorrections.count, 1)
+        XCTAssertEqual(result.pendingReviewCorrections.first?.existingFact.factText, "wants the O-1 visa")
+        XCTAssertEqual(result.pendingReviewCorrections.first?.extractedFact.factText, "no longer wants the O-1 visa")
+        XCTAssertTrue(result.failedCorrections.isEmpty, "this matched something — it's pending review, not a failed/no-match correction")
     }
 }

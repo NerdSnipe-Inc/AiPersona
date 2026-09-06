@@ -19,8 +19,8 @@ public enum NotionCorrectionImportService {
         var failedRows: [NotionCorrectionRow] = []
         for row in rows {
             let episode = ChatEpisode(userText: row.correctionNotes, assistantText: "", occurredAt: Date())
-            let failedCorrections = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
-            if failedCorrections.isEmpty {
+            let result = await IngestionActor.shared.enqueue(episode, provider: provider, store: store)
+            if result.failedCorrections.isEmpty {
                 try await client.clearNeedsReview(pageID: row.pageID)
             } else {
                 failedRows.append(row)
