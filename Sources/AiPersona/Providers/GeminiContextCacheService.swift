@@ -36,11 +36,19 @@ public actor GeminiContextCacheService {
         guard compilation.count >= minimumCacheableCharacters else { return nil }
 
         if compilation == cachedCompilation, let existingName = cacheName {
-            try? await client.refreshTTL(cacheName: existingName, ttlSeconds: ttlSeconds)
+            do {
+                try await client.refreshTTL(cacheName: existingName, ttlSeconds: ttlSeconds)
+            } catch {
+                AiPersonaLog.logger("Gemini").notice("Cache TTL refresh failed (cache may expire): \(error.localizedDescription, privacy: .public)")
+            }
             return existingName
         }
 
-        guard let name = try? await client.createCache(model: model, systemPrompt: compilation, ttlSeconds: ttlSeconds) else {
+        let name: String
+        do {
+            name = try await client.createCache(model: model, systemPrompt: compilation, ttlSeconds: ttlSeconds)
+        } catch {
+            AiPersonaLog.logger("Gemini").notice("Cache creation failed, sending uncached: \(error.localizedDescription, privacy: .public)")
             return nil
         }
         cacheName = name

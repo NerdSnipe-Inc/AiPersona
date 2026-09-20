@@ -64,7 +64,7 @@ public struct EnqueueResult: Sendable {
 public actor IngestionActor {
     public static let shared = IngestionActor()
 
-    private let logger = Logger(subsystem: "com.aipersona", category: "IngestionActor")
+    private let logger = AiPersonaLog.logger("Ingestion")
 
     public init() {}
 

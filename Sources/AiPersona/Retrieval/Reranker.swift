@@ -59,11 +59,21 @@ public struct ChatProviderReranker: Reranker {
     public func rerank(query: String, candidates: [String]) async -> [String] {
         guard candidates.count > 1 else { return candidates }
         let prompt = Self.buildPrompt(query: query, candidates: candidates)
-        guard let result = try? await provider.complete(
-            messages: [ChatMessage(role: .user, content: prompt)], model: model, options: ChatRequestOptions()
-        ), case .text(let text) = result.message.content.first,
-            let order = Self.parseOrder(fromResponseText: text, candidateCount: candidates.count)
-        else { return candidates }
+        let result: ChatCompletionResult
+        do {
+            result = try await provider.complete(
+                messages: [ChatMessage(role: .user, content: prompt)], model: model, options: ChatRequestOptions()
+            )
+        } catch {
+            AiPersonaLog.logger("Retrieval").notice("Rerank call failed, keeping hybrid order: \(error.localizedDescription, privacy: .public)")
+            return candidates
+        }
+        guard case .text(let text) = result.message.content.first,
+              let order = Self.parseOrder(fromResponseText: text, candidateCount: candidates.count)
+        else {
+            AiPersonaLog.logger("Retrieval").notice("Rerank output unparseable, keeping hybrid order")
+            return candidates
+        }
         return order.map { candidates[$0 - 1] }
     }
 }

@@ -65,7 +65,11 @@ public struct GeminiCacheClient: GeminiCacheAPIClient, Sendable {
 
     public func createCache(model: String, systemPrompt: String, ttlSeconds: Int) async throws -> String {
         let request = try buildCreateCacheRequest(model: model, systemPrompt: systemPrompt, ttlSeconds: ttlSeconds)
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            AiPersonaLog.logger("Gemini").error("createCache HTTP \(http.statusCode)")
+            throw GeminiCacheClientError.invalidResponse
+        }
         guard let name = Self.parseCacheName(fromResponseBody: data) else { throw GeminiCacheClientError.invalidResponse }
         return name
     }

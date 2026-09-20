@@ -28,7 +28,11 @@ public final class NotionSettingsStore {
     }
 
     public func setIntegrationToken(_ token: String) {
-        try? PersonaKeychain.save(token, forKey: Self.integrationTokenKey)
+        do {
+            try PersonaKeychain.save(token, forKey: Self.integrationTokenKey)
+        } catch {
+            AiPersonaLog.logger("Keychain").error("Keychain save failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     public func clearIntegrationToken() {

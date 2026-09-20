@@ -53,7 +53,11 @@ public final class MemorySettingsStore {
     }
 
     public func setAPIKey(_ key: String, for kind: MemoryProviderKind) {
-        try? PersonaKeychain.save(key, forKey: Self.apiKeyStorageKey(for: kind))
+        do {
+            try PersonaKeychain.save(key, forKey: Self.apiKeyStorageKey(for: kind))
+        } catch {
+            AiPersonaLog.logger("Keychain").error("Keychain save failed: \(String(describing: error), privacy: .public)")
+        }
     }
 
     public func clearAPIKey(for kind: MemoryProviderKind) {

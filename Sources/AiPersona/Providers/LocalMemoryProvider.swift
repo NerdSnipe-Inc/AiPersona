@@ -30,9 +30,25 @@ public struct LocalMemoryProvider: MemoryProvider {
             let result = try await provider.complete(
                 messages: [ChatMessage(role: .user, content: text)], model: modelId, options: options
             )
-            guard case .text(let output) = result.message.content.first else { return "" }
+            guard case .text(let output) = result.message.content.first else {
+                AiPersonaLog.logger("Extraction").notice("Model returned a non-text message; no facts extracted")
+                return ""
+            }
             return output
         }
-        return ExtractionPromptFormat.parse(output)
+        let logger = AiPersonaLog.logger("Extraction")
+        let parsed = ExtractionPromptFormat.parseDetailed(output)
+        if parsed.looksUnparseable, !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // The model answered but not with JSON (refusal, prose, truncation before any object).
+            // Facts are lost for this episode — say so, with the raw text for diagnosis.
+            logger.error("Extraction output unparseable (\(output.count) chars): \(output.prefix(500), privacy: .private)")
+        } else if output.isEmpty {
+            logger.notice("Extraction returned empty output")
+        } else if parsed.skippedObjects > 0 {
+            logger.notice("Extraction dropped \(parsed.skippedObjects) malformed fact object(s), kept \(parsed.facts.count)")
+        } else {
+            logger.debug("Extraction parsed \(parsed.facts.count) fact(s)")
+        }
+        return parsed.facts
     }
 }

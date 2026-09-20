@@ -56,6 +56,18 @@ public struct GeminiProvider: ChatProvider {
         return text
     }
 
+    /// Pulls Google's `{"error":{"message":...}}` text out of a non-2xx body, falling back to the
+    /// (truncated) raw body so the surfaced error is never blank.
+    static func extractErrorMessage(fromResponseBody data: Data) -> String {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = json["error"] as? [String: Any],
+           let message = error["message"] as? String, !message.isEmpty {
+            return message
+        }
+        let raw = String(data: data, encoding: .utf8) ?? ""
+        return raw.isEmpty ? "empty response body" : String(raw.prefix(300))
+    }
+
     public func complete(messages: [ChatMessage], model: String, options: ChatRequestOptions) async throws -> ChatCompletionResult {
         try await complete(messages: messages, model: model, options: options, cachedContentName: nil)
     }
@@ -67,8 +79,18 @@ public struct GeminiProvider: ChatProvider {
         messages: [ChatMessage], model: String, options: ChatRequestOptions, cachedContentName: String?
     ) async throws -> ChatCompletionResult {
         let request = try buildRequest(messages: messages, options: options, cachedContentName: cachedContentName)
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            // Previously a non-2xx body (bad key, quota, bad model) fell through to
+            // `extractText`, which returned "" — surfacing as an empty, unexplained reply.
+            let message = Self.extractErrorMessage(fromResponseBody: data)
+            AiPersonaLog.logger("Gemini").error("HTTP \(http.statusCode): \(message, privacy: .public)")
+            throw ChatError.serverError(statusCode: http.statusCode, message: message)
+        }
         let text = Self.extractText(fromResponseBody: data)
+        if text.isEmpty {
+            AiPersonaLog.logger("Gemini").notice("2xx response contained no candidate text")
+        }
         return ChatCompletionResult(
             id: nil, model: model, message: ChatMessage(role: .assistant, content: text),
             usage: nil, finishReason: .stop

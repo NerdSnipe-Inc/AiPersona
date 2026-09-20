@@ -22,8 +22,15 @@ public struct ExternalMemoryProvider: MemoryProvider {
         let result = try await chatProvider.complete(
             messages: [ChatMessage(role: .user, content: text)], model: model, options: options
         )
-        guard case .text(let output) = result.message.content.first else { return [] }
-        return ExtractionPromptFormat.parse(output)
+        guard case .text(let output) = result.message.content.first else {
+            AiPersonaLog.logger("Extraction").notice("External provider returned a non-text message; no facts extracted")
+            return []
+        }
+        let parsed = ExtractionPromptFormat.parseDetailed(output)
+        if parsed.looksUnparseable, !output.isEmpty {
+            AiPersonaLog.logger("Extraction").error("External extraction output unparseable: \(output.prefix(500), privacy: .private)")
+        }
+        return parsed.facts
     }
 }
 
@@ -45,13 +52,22 @@ public enum MemoryProviderFactory {
         case .local:
             return localFallback
         case .gemini:
-            guard let key = settings.apiKey(for: .gemini) else { return localFallback }
+            guard let key = settings.apiKey(for: .gemini) else {
+                AiPersonaLog.logger("Extraction").notice("Extraction provider gemini selected but no API key is stored; falling back to local model")
+                return localFallback
+            }
             return ExternalMemoryProvider(chatProvider: GeminiProvider(apiKey: key), model: "gemini-2.5-flash")
         case .openAI:
-            guard let key = settings.apiKey(for: .openAI) else { return localFallback }
+            guard let key = settings.apiKey(for: .openAI) else {
+                AiPersonaLog.logger("Extraction").notice("Extraction provider openAI selected but no API key is stored; falling back to local model")
+                return localFallback
+            }
             return ExternalMemoryProvider(chatProvider: OpenAIProvider(apiKey: key), model: "gpt-4o-mini")
         case .anthropic:
-            guard let key = settings.apiKey(for: .anthropic) else { return localFallback }
+            guard let key = settings.apiKey(for: .anthropic) else {
+                AiPersonaLog.logger("Extraction").notice("Extraction provider anthropic selected but no API key is stored; falling back to local model")
+                return localFallback
+            }
             return ExternalMemoryProvider(chatProvider: AnthropicProvider(apiKey: key), model: "claude-3-5-haiku-latest")
         }
     }

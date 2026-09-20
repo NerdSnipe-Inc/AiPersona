@@ -12,7 +12,7 @@ public final class MemoryGraphStore {
 
     private let container: ModelContainer
     private var context: ModelContext { container.mainContext }
-    private let logger = Logger(subsystem: "com.aipersona", category: "MemoryGraphStore")
+    private let logger = AiPersonaLog.logger("Store")
 
     public init(inMemory: Bool = false) {
         let schema = Schema([EntityNode.self, EpisodicNode.self, FactEdge.self])
@@ -46,7 +46,11 @@ public final class MemoryGraphStore {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let bundleID = Bundle.main.bundleIdentifier ?? "AiPersona"
         let hostDirectory = appSupport.appendingPathComponent(bundleID, isDirectory: true)
-        try? FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: hostDirectory, withIntermediateDirectories: true)
+        } catch {
+            AiPersonaLog.logger("Store").error("Cannot create store directory \(hostDirectory.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
         let newURL = hostDirectory.appendingPathComponent("AiPersonaMemory.store")
         migrateFromUnnamespacedLocation(appSupport: appSupport, to: newURL)
         return newURL
@@ -64,7 +68,11 @@ public final class MemoryGraphStore {
         for suffix in ["", "-shm", "-wal"] {
             let source = URL(fileURLWithPath: oldURL.path + suffix)
             let destination = URL(fileURLWithPath: newURL.path + suffix)
-            try? FileManager.default.moveItem(at: source, to: destination)
+            if FileManager.default.fileExists(atPath: source.path) {
+                do { try FileManager.default.moveItem(at: source, to: destination) } catch {
+                    AiPersonaLog.logger("Store").error("Legacy store migration failed for \(source.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 
@@ -78,7 +86,7 @@ public final class MemoryGraphStore {
         if let existing = findEntity(named: name) {
             existing.summary = summary
             existing.embedding = embedding
-            try? context.save()
+            persist()
             return existing
         }
         if let existing = findEntity(fuzzyMatching: name) {
@@ -86,12 +94,12 @@ public final class MemoryGraphStore {
             if !existing.aliases.contains(name) {
                 existing.aliases.append(name)
             }
-            try? context.save()
+            persist()
             return existing
         }
         let entity = EntityNode(name: name, summary: summary, kind: kind, embedding: embedding)
         context.insert(entity)
-        try? context.save()
+        persist()
         return entity
     }
 
@@ -125,13 +133,13 @@ public final class MemoryGraphStore {
             existing.name = name
             existing.summary = summary
             existing.embedding = embedding
-            try? context.save()
+            persist()
             return existing
         }
         let entity = upsertEntity(name: name, summary: summary, kind: kind, embedding: embedding)
         if let externalRef {
             entity.externalRef = externalRef
-            try? context.save()
+            persist()
         }
         return entity
     }
@@ -146,7 +154,7 @@ public final class MemoryGraphStore {
             embedding: embedding, validAt: Date(), isUserEdited: isUserEdited
         )
         context.insert(fact)
-        try? context.save()
+        persist()
         return fact
     }
 
@@ -155,7 +163,7 @@ public final class MemoryGraphStore {
     public func invalidateFacts(subjectID: UUID, predicate: String, at date: Date = Date()) {
         let matching = activeFacts().filter { $0.subjectID == subjectID && $0.predicate == predicate }
         for fact in matching { fact.invalidAt = date }
-        try? context.save()
+        persist()
     }
 
     /// Finds the single active fact that a subject-only correction (`relatedTo` its embedding) is
@@ -217,14 +225,14 @@ public final class MemoryGraphStore {
                 subjectID: subjectID, relatedTo: correctionEmbedding, minimumSimilarity: minimumSimilarity
             ) else { return false }
             candidate.invalidAt = date
-            try? context.save()
+            persist()
             return true
         }
 
         let matching = correctionCandidates(subjectID: subjectID, objectID: objectID)
         guard !matching.isEmpty else { return false }
         for fact in matching { fact.invalidAt = date }
-        try? context.save()
+        persist()
         return true
     }
 
@@ -237,7 +245,7 @@ public final class MemoryGraphStore {
     public func invalidateFact(id: UUID, at date: Date = Date()) -> Bool {
         guard let fact = allFacts().first(where: { $0.id == id && $0.invalidAt == nil }) else { return false }
         fact.invalidAt = date
-        try? context.save()
+        persist()
         return true
     }
 
@@ -245,8 +253,24 @@ public final class MemoryGraphStore {
     public func addEpisode(rawText: String, summary: String, occurredAt: Date) -> EpisodicNode {
         let episode = EpisodicNode(rawText: rawText, summary: summary, occurredAt: occurredAt)
         context.insert(episode)
-        try? context.save()
+        persist()
         return episode
+    }
+
+    /// Save failures used to be swallowed by `try?`, leaving an in-memory graph that silently
+    /// diverged from disk. They are now logged (subsystem `cc.nerdsnipe.AiPersona`, category
+    /// `Store`) — the mutating APIs stay non-throwing so existing hosts keep compiling.
+    private func persist() {
+        do { try context.save() } catch {
+            logger.error("SwiftData save failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func fetchAll<T: PersistentModel>(_ type: T.Type) -> [T] {
+        do { return try context.fetch(FetchDescriptor<T>()) } catch {
+            logger.error("SwiftData fetch of \(String(describing: type), privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
     }
 
     public func activeFacts() -> [FactEdge] {
@@ -254,15 +278,15 @@ public final class MemoryGraphStore {
     }
 
     public func allFacts() -> [FactEdge] {
-        (try? context.fetch(FetchDescriptor<FactEdge>())) ?? []
+        fetchAll(FactEdge.self)
     }
 
     public func allEntities() -> [EntityNode] {
-        (try? context.fetch(FetchDescriptor<EntityNode>())) ?? []
+        fetchAll(EntityNode.self)
     }
 
     public func allEpisodes() -> [EpisodicNode] {
-        (try? context.fetch(FetchDescriptor<EpisodicNode>())) ?? []
+        fetchAll(EpisodicNode.self)
     }
 
     /// Edits an entity's canonical name and summary in place — the finer-grained counterpart to
@@ -274,7 +298,7 @@ public final class MemoryGraphStore {
         guard let entity = allEntities().first(where: { $0.id == id }) else { return false }
         entity.name = name
         entity.summary = summary
-        try? context.save()
+        persist()
         return true
     }
 
@@ -289,7 +313,7 @@ public final class MemoryGraphStore {
             context.delete(fact)
         }
         context.delete(entity)
-        try? context.save()
+        persist()
         return true
     }
 
@@ -304,7 +328,7 @@ public final class MemoryGraphStore {
         guard let fact = allFacts().first(where: { $0.id == id }) else { return false }
         fact.factText = factText
         fact.isUserEdited = true
-        try? context.save()
+        persist()
         return true
     }
 
@@ -314,7 +338,7 @@ public final class MemoryGraphStore {
         for entity in allEntities() { context.delete(entity) }
         for episode in allEpisodes() { context.delete(episode) }
         for fact in allFacts() { context.delete(fact) }
-        try? context.save()
+        persist()
     }
 
     /// The current graph as `react-force-graph`-shaped nodes/links — synapse-cortex's Knowledge
