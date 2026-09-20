@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-20
+
 ### Fixed
 - `ExtractionPromptFormat.parse` no longer loses every fact when the model output has a `[` in a
   preamble, is truncated, or contains one malformed element; it now scans for balanced JSON objects
