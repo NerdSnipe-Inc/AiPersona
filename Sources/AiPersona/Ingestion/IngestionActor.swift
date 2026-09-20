@@ -27,7 +27,7 @@ public struct ChatEpisode: Sendable {
 /// `PendingCorrection` must only be read or acted upon back on `@MainActor` — exactly where
 /// `enqueue` constructs it and where `MemoryGraphStore`'s mutating APIs (e.g. to Accept/Discard)
 /// must be called.
-public struct PendingCorrection: Sendable {
+public struct PendingCorrection: @unchecked Sendable {
     public let extractedFact: ExtractedFact
     public let existingFact: FactEdge
 

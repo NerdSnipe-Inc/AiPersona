@@ -7,6 +7,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `ExtractionPromptFormat.parse` no longer loses every fact when the model output has a `[` in a
+  preamble, is truncated, or contains one malformed element; it now scans for balanced JSON objects
+  (see `parseDetailed`). Handles fences, `<think>` blocks, bare/wrapped objects, missing
+  `isCorrection`, `"null"` objectName.
+- `IngestionActor` maps the "the user" stand-in to the host-supplied `knownUserName`, so a correction
+  in a later episode can find facts stored under the user's name (found live: gemma alternated
+  between "Sam" and "the user").
+- `GeminiProvider.complete` throws `ChatError.serverError` (with Google's message) on non-2xx
+  instead of returning an empty reply; `GeminiCacheClient.createCache` checks status too.
+- SwiftData save/fetch failures, Keychain save failures, legacy-store migration failures, Reranker
+  and Gemini-cache failures are logged instead of swallowed by `try?`.
+- `PendingCorrection` is `@unchecked Sendable` (documented main-actor-only) to silence the Swift 6
+  warning.
+
+### Added
+- `os.Logger` diagnostics under subsystem `cc.nerdsnipe.AiPersona` (was `com.aipersona`), with the
+  raw model output logged (private) when extraction output is unparseable.
+- `ExtractionPromptFormat.parseDetailed` / `ParseResult`.
+- `docs/ARCHITECTURE.md`, `docs/TESTING.md`.
+
 ### Added
 - `FactEdge.isUserEdited` (defaults `false`, both at the property and `init` level, so an existing
   on-disk store migrates safely): set once a human hand-authors or hand-edits a fact — via the new

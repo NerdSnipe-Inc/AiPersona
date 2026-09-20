@@ -325,9 +325,8 @@ synapse-cortex, see [`source-compared.md`](source-compared.md) (feature-by-featu
 
 ## Testing
 
-```sh
-swift test
-```
-
-94 tests across extraction, ingestion, memory graph, persona, providers, retrieval, and the
-Notion/Gemini-caching integrations — one test file per source file.
+170 package tests (~3 s, no model needed) plus live end-to-end tests against the local
+gemma-4-e4b model in the host app. See [docs/TESTING.md](docs/TESTING.md) for the commands, and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit, the concurrency model, the
+debug-logging recipe (`log stream --predicate 'subsystem == "cc.nerdsnipe.AiPersona"' --level debug`)
+and known limits.
