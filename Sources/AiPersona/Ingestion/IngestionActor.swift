@@ -86,6 +86,23 @@ public actor IngestionActor {
         "current date", "current time", "today's date", "the date is", "the time is", "o'clock"
     ]
 
+    /// Stand-ins the extraction prompt itself tells the model to use for the user ("the user").
+    private static let userStandIns: Set<String> = ["the user", "user", "this user", "the human"]
+
+    /// When the host knows the user's real name, "the user" and that name are the SAME entity —
+    /// but a 4-bit model flips between them from one episode to the next (observed live: episode 1
+    /// used "Sam", episode 2 used "the user" for the same person even though "Known user name: Sam"
+    /// was in the prompt). Left alone, that fragments the graph into two subjects, so a later
+    /// correction ("I don't work at Acme any more") could never find the fact it corrects.
+    static func canonicalized(_ fact: ExtractedFact, knownUserName: String?) -> ExtractedFact {
+        guard let name = knownUserName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return fact }
+        func map(_ value: String) -> String { userStandIns.contains(value.lowercased()) ? name : value }
+        return ExtractedFact(
+            subjectName: map(fact.subjectName), objectName: fact.objectName.map(map),
+            predicate: fact.predicate, factText: fact.factText, isCorrection: fact.isCorrection
+        )
+    }
+
     private static func isJunk(_ fact: ExtractedFact) -> Bool {
         if pronouns.contains(fact.subjectName.lowercased()) { return true }
         if let objectName = fact.objectName, pronouns.contains(objectName.lowercased()) { return true }
@@ -140,11 +157,12 @@ public actor IngestionActor {
         do {
             facts = try await provider.extractFacts(fromEpisode: episodeText)
         } catch {
-            logger.error("Extraction failed, skipping episode: \(error.localizedDescription)")
+            logger.error("Extraction failed, skipping episode: \(error.localizedDescription, privacy: .public)")
+            logger.debug("Extraction failure detail: \(String(reflecting: error), privacy: .private)")
             return EnqueueResult(failedCorrections: [], pendingReviewCorrections: [])
         }
         guard !facts.isEmpty else { return EnqueueResult(failedCorrections: [], pendingReviewCorrections: []) }
-        let cleanFacts = facts.filter { !Self.isJunk($0) }
+        let cleanFacts = facts.filter { !Self.isJunk($0) }.map { Self.canonicalized($0, knownUserName: knownUserName) }
         guard !cleanFacts.isEmpty else { return EnqueueResult(failedCorrections: [], pendingReviewCorrections: []) }
 
         return await MainActor.run {

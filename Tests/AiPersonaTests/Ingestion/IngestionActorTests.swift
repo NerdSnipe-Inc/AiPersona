@@ -361,4 +361,34 @@ final class IngestionActorTests: XCTestCase {
         XCTAssertEqual(result.pendingReviewCorrections.count, 2, "every fact in the matched set should be reported pending review")
         XCTAssertTrue(result.failedCorrections.isEmpty)
     }
+
+    /// Regression (found live against gemma-4-e4b): the model called the same person "Sam" in one
+    /// episode and "the user" in the next, so the correction found no subject to act on.
+    @MainActor
+    func test_enqueue_userStandIn_isCanonicalizedToKnownName_soCorrectionsMatch() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let episode = ChatEpisode(userText: "x", assistantText: "y", occurredAt: Date())
+        await IngestionActor().enqueue(episode, provider: StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "Sam", objectName: "Acme", predicate: "works at", factText: "Sam works at Acme.", isCorrection: false)
+        ]), store: store, knownUserName: "Sam")
+
+        let result = await IngestionActor().enqueue(episode, provider: StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "the user", objectName: "Acme", predicate: "no longer works at", factText: "the user no longer works at Acme.", isCorrection: true),
+            ExtractedFact(subjectName: "the user", objectName: "Globex", predicate: "works at", factText: "the user now works at Globex.", isCorrection: false),
+        ]), store: store, knownUserName: "Sam")
+
+        XCTAssertTrue(result.failedCorrections.isEmpty)
+        XCTAssertEqual(store.activeFacts().map(\.factText), ["the user now works at Globex."])
+        XCTAssertNil(store.findEntity(named: "the user"), "no fragmented 'the user' entity when the name is known")
+    }
+
+    @MainActor
+    func test_enqueue_userStandIn_isKeptWhenNoNameKnown() async {
+        let store = MemoryGraphStore(inMemory: true)
+        let episode = ChatEpisode(userText: "x", assistantText: "y", occurredAt: Date())
+        await IngestionActor().enqueue(episode, provider: StubMemoryProvider(facts: [
+            ExtractedFact(subjectName: "the user", objectName: nil, predicate: "likes", factText: "the user likes tea", isCorrection: false)
+        ]), store: store)
+        XCTAssertNotNil(store.findEntity(named: "the user"))
+    }
 }
