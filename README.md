@@ -1,5 +1,12 @@
 # AiPersona
 
+![Swift 5.10](https://img.shields.io/badge/Swift-5.10-orange?logo=swift)
+![iOS 17+](https://img.shields.io/badge/iOS-17%2B-blue?logo=apple)
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue?logo=apple)
+![SPM](https://img.shields.io/badge/SPM-compatible-brightgreen)
+[![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FNerdSnipe-Inc%2FAiPersona%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/NerdSnipe-Inc/AiPersona)
+[![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2FNerdSnipe-Inc%2FAiPersona%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/NerdSnipe-Inc/AiPersona)
+
 An embeddable, on-device long-term memory engine for AI chat apps on Apple platforms. `AiPersona`
 is a from-scratch Swift Package reimplementation of [synapse-cortex](https://github.com/juandastic/synapse-cortex)'s
 *cognitive core* — a temporal knowledge graph, hybrid (BM25 + embedding) retrieval, and
