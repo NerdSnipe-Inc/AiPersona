@@ -109,3 +109,6 @@ data logging (`sudo log config --mode "private_data:on"`).
   nothing, so BM25 carries those queries.
 * `LocalMemoryProvider` needs the model already downloaded or downloadable; if `loadModel()` throws,
   the episode is skipped (logged), not retried.
+* AiPersona logs through its own `os.Logger` subsystem (`cc.nerdsnipe.AiPersona`, `AiPersonaLog.swift`)
+  rather than AIChatKit's `ChatLog`: `Package.swift` accepts AIChatKit `from: "1.0.0"`, and `ChatLog`
+  only exists from AIChatKit 1.1.0. The `cc.nerdsnipe` predicate above still captures both.
