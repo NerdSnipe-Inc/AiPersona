@@ -42,13 +42,14 @@ synapse-cortex's README.
   `AIChatOpenAI`, `AIChatAnthropic`) and [`AIChatKitMLX`](https://github.com/NerdSnipe-Inc/AIChatKitMLX)
   (`AIChatMLX`) — resolved from a sibling checkout (`../AIChatKit`, `../AIChatKitMLX`) if present,
   otherwise from GitHub. Set `SPI_PROCESSING` or `FORCE_REMOTE_PACKAGES` to force the remote
-  resolution path (see `Package.swift`).
+  resolution path (see `Package.swift`). AiPersona 1.1.1+ accepts AIChatKit 1.x or 2.x — only
+  `AIChatCore`/`AIChatOpenAI`/`AIChatAnthropic` are used, and those are unchanged in 2.0.0.
 
 ## Installation
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/NerdSnipe-Inc/AiPersona.git", from: "1.0.0"),
+    .package(url: "https://github.com/NerdSnipe-Inc/AiPersona.git", from: "1.1.1"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: ["AiPersona"]),
