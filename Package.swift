@@ -12,7 +12,7 @@ private let packageDirectory = URL(fileURLWithPath: #filePath).deletingLastPathC
 private func siblingOrRemote(
     siblingRelativePath: String,
     url: String,
-    from version: Version
+    range: Range<Version>
 ) -> Package.Dependency {
     let siblingManifest = packageDirectory
         .appendingPathComponent(siblingRelativePath)
@@ -36,7 +36,7 @@ private func siblingOrRemote(
     if !forceRemote, FileManager.default.fileExists(atPath: siblingManifest.path) {
         return .package(path: siblingRelativePath)
     }
-    return .package(url: url, from: version)
+    return .package(url: url, range)
 }
 
 let package = Package(
@@ -49,12 +49,13 @@ let package = Package(
         siblingOrRemote(
             siblingRelativePath: "../AIChatKit",
             url: "https://github.com/NerdSnipe-Inc/AIChatKit.git",
-            from: "1.0.0"
+            // Only AIChatCore/OpenAI/Anthropic are used; they are source-compatible across 1.x and 2.x.
+            range: "1.0.0"..<"3.0.0"
         ),
         siblingOrRemote(
             siblingRelativePath: "../AIChatKitMLX",
             url: "https://github.com/NerdSnipe-Inc/AIChatKitMLX.git",
-            from: "1.0.0"
+            range: "1.0.0"..<"2.0.0"
         ),
     ],
     targets: [

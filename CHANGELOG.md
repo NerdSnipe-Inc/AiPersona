@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-27
+
+### Changed
+- Accepts `AIChatKit` 1.0.0 up to (not including) 3.0.0, so an app can use AIChatKit 2.x. AiPersona only uses
+  `AIChatCore`, `AIChatOpenAI` and `AIChatAnthropic`, which are unchanged in 2.0.0.
+
 ## [1.1.0] - 2026-09-20
 
 ### Fixed
