@@ -19,6 +19,10 @@ conversations are extracted, stored in a small local knowledge graph, and surfac
 future system prompts — without a backend, without an account system, and without sending the
 user's data anywhere unless the host app opts into an external LLM/embedding provider.
 
+[![Sponsor NerdSnipe-Inc](https://img.shields.io/badge/Sponsor-NerdSnipe--Inc-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/NerdSnipe-Inc)
+
+> AiPersona is free and open source. If it saved you time, [sponsoring NerdSnipe Inc](https://github.com/sponsors/NerdSnipe-Inc) pays for the maintenance, bug fixes and new releases that keep it working.
+
 ## What this is (and isn't)
 
 - **Is:** a headless library. It stores and retrieves memory; it does not run a chat loop.
@@ -343,3 +347,10 @@ and known limits.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Support this project
+
+AiPersona is built and maintained by [NerdSnipe Inc](https://nerdsnipe.cc), a small independent studio in Ottawa. Sponsorship funds the memory engine's ongoing fixes and improvements.
+
+- [Sponsor on GitHub](https://github.com/sponsors/NerdSnipe-Inc), from $5/month or a one-time amount
+- [More about what we fund](https://nerdsnipe.cc/sponsor)

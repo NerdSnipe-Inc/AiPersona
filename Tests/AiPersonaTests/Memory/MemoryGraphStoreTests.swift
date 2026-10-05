@@ -245,4 +245,60 @@ final class MemoryGraphStoreTests: XCTestCase {
 
         XCTAssertTrue(store.allFacts().first { $0.id == fact.id }!.isUserEdited)
     }
+
+    func test_findEntity_externalRef_findsOnlyTheMatchingEntity() {
+        let store = MemoryGraphStore(inMemory: true)
+        let a = store.upsertEntity(externalRef: "ref-a", name: "Alpha Person", summary: "", kind: .subject, embedding: [])
+        let b = store.upsertEntity(externalRef: "ref-b", name: "Bravo Human", summary: "", kind: .subject, embedding: [])
+
+        XCTAssertEqual(store.findEntity(externalRef: "ref-a")?.id, a.id)
+        XCTAssertEqual(store.findEntity(externalRef: "ref-b")?.id, b.id)
+        XCTAssertNil(store.findEntity(externalRef: "ref-missing"))
+    }
+
+    func test_invalidateFacts_subjectAndPredicate_onlyTouchesThatSubjectsMatchingFacts() {
+        let store = MemoryGraphStore(inMemory: true)
+        let a = store.upsertEntity(name: "Alpha Person", summary: "", kind: .subject, embedding: [])
+        let b = store.upsertEntity(name: "Bravo Human", summary: "", kind: .subject, embedding: [])
+        store.addFact(subjectID: a.id, objectID: nil, predicate: "tag", factText: "tagged x", embedding: [])
+        store.addFact(subjectID: a.id, objectID: nil, predicate: "deal", factText: "deal: y", embedding: [])
+        store.addFact(subjectID: b.id, objectID: nil, predicate: "tag", factText: "tagged z", embedding: [])
+
+        store.invalidateFacts(subjectID: a.id, predicate: "tag")
+
+        let active = Set(store.activeFacts().map(\.factText))
+        XCTAssertEqual(active, ["deal: y", "tagged z"])
+        XCTAssertEqual(store.allFacts().count, 3)
+    }
+
+    func test_upsertEntity_withExternalRef_doesNotAbsorbEntityPinnedToADifferentRef() {
+        let store = MemoryGraphStore(inMemory: true)
+        let first = store.upsertEntity(externalRef: "ref-1", name: "Sam Taylor", summary: "", kind: .subject, embedding: [])
+        let second = store.upsertEntity(externalRef: "ref-2", name: "Sam Taylor", summary: "", kind: .subject, embedding: [])
+
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(first.externalRef, "ref-1")
+        XCTAssertEqual(second.externalRef, "ref-2")
+    }
+
+    func test_upsertEntity_withExternalRef_stillPinsAnUnanchoredChatEntityByName() {
+        let store = MemoryGraphStore(inMemory: true)
+        let chat = store.upsertEntity(name: "Juan Gómez", summary: "", kind: .subject, embedding: [])
+        let pinned = store.upsertEntity(externalRef: "ref-juan", name: "Juan Gómez", summary: "", kind: .subject, embedding: [])
+
+        XCTAssertEqual(pinned.id, chat.id)
+        XCTAssertEqual(store.findEntity(externalRef: "ref-juan")?.id, chat.id)
+    }
+
+    func test_performBatch_keepsPendingChangesVisibleToFetches() {
+        let store = MemoryGraphStore(inMemory: true)
+        let e = store.upsertEntity(externalRef: "ref-batch", name: "Batch Person", summary: "", kind: .subject, embedding: [])
+        store.performBatch {
+            store.addFact(subjectID: e.id, objectID: nil, predicate: "tag", factText: "tagged a", embedding: [])
+            store.invalidateFacts(subjectID: e.id, predicate: "tag")
+            store.addFact(subjectID: e.id, objectID: nil, predicate: "tag", factText: "tagged b", embedding: [])
+        }
+        XCTAssertEqual(store.activeFacts().map(\.factText), ["tagged b"])
+        XCTAssertEqual(store.allFacts().count, 2)
+    }
 }

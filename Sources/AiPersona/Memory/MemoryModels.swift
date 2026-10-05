@@ -74,8 +74,10 @@ public final class FactEdge: Identifiable {
     // Using String-backed storage as a workaround. The UUID values are always set via the computed
     // property setters, so the stored strings are guaranteed to be valid UUIDs; any parse failure
     // indicates data corruption.
-    private var subjectIDString: String
-    private var objectIDString: String?
+    // Internal (not private) so `MemoryGraphStore` can build `#Predicate`s on it — fetching a
+    // single subject's facts instead of the whole table.
+    var subjectIDString: String
+    var objectIDString: String?
     public var predicate: String
     public var factText: String
     public var embedding: [Float]

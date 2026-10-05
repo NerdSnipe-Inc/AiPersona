@@ -83,13 +83,25 @@ public final class MemoryGraphStore {
     /// original extracted name is never lost.
     @discardableResult
     public func upsertEntity(name: String, summary: String, kind: EntityKind, embedding: [Float]) -> EntityNode {
-        if let existing = findEntity(named: name) {
+        upsertEntity(name: name, summary: summary, kind: kind, embedding: embedding, candidates: allEntities())
+    }
+
+    private func upsertEntity(
+        name: String, summary: String, kind: EntityKind, embedding: [Float], candidates: [EntityNode]
+    ) -> EntityNode {
+        let lowered = name.lowercased()
+        if let existing = candidates.first(where: { entity in
+            entity.name.lowercased() == lowered || entity.aliases.contains { $0.lowercased() == lowered }
+        }) {
             existing.summary = summary
             existing.embedding = embedding
             persist()
             return existing
         }
-        if let existing = findEntity(fuzzyMatching: name) {
+        if let existing = candidates.first(where: { entity in
+            EntityNameMatcher.matches(name, entity.name)
+                || entity.aliases.contains { EntityNameMatcher.matches(name, $0) }
+        }) {
             existing.summary = summary
             if !existing.aliases.contains(name) {
                 existing.aliases.append(name)
@@ -118,7 +130,11 @@ public final class MemoryGraphStore {
     }
 
     public func findEntity(externalRef: String) -> EntityNode? {
-        allEntities().first { $0.externalRef == externalRef }
+        // Predicate fetch, not `allEntities()`: a host syncing thousands of externally-anchored
+        // entities calls this once per entity, so a full-table fetch here is O(N^2) overall.
+        var descriptor = FetchDescriptor<EntityNode>(predicate: #Predicate { $0.externalRef == externalRef })
+        descriptor.fetchLimit = 1
+        return fetchOrEmpty(descriptor).first
     }
 
     /// `externalRef`-first entity resolution: an exact `externalRef` match always wins (a stable ID
@@ -136,11 +152,17 @@ public final class MemoryGraphStore {
             persist()
             return existing
         }
-        let entity = upsertEntity(name: name, summary: summary, kind: kind, embedding: embedding)
-        if let externalRef {
-            entity.externalRef = externalRef
-            persist()
+        guard let externalRef else {
+            return upsertEntity(name: name, summary: summary, kind: kind, embedding: embedding)
         }
+        // No entity is pinned to this ref yet. Fall back to name matching, but only against
+        // entities with no external anchor (chat-derived ones) — an entity already pinned to a
+        // different record is a different identity, and scanning every pinned entity per new one
+        // made a first sync of N records O(N^2).
+        let unanchored = fetchOrEmpty(FetchDescriptor<EntityNode>(predicate: #Predicate { $0.externalRef == nil }))
+        let entity = upsertEntity(name: name, summary: summary, kind: kind, embedding: embedding, candidates: unanchored)
+        entity.externalRef = externalRef
+        persist()
         return entity
     }
 
@@ -161,7 +183,7 @@ public final class MemoryGraphStore {
     /// Sets `invalidAt` on every currently-active fact matching `subjectID`/`predicate` — never
     /// deletes, per the bi-temporal design.
     public func invalidateFacts(subjectID: UUID, predicate: String, at date: Date = Date()) {
-        let matching = activeFacts().filter { $0.subjectID == subjectID && $0.predicate == predicate }
+        let matching = activeFacts(subjectID: subjectID).filter { $0.predicate == predicate }
         for fact in matching { fact.invalidAt = date }
         persist()
     }
@@ -179,7 +201,7 @@ public final class MemoryGraphStore {
     public func correctionCandidate(
         subjectID: UUID, relatedTo correctionEmbedding: [Float], minimumSimilarity: Double = 0.5
     ) -> FactEdge? {
-        let candidates = activeFacts().filter { $0.subjectID == subjectID && $0.objectID == nil }
+        let candidates = activeFacts(subjectID: subjectID).filter { $0.objectID == nil }
         let scored = candidates.map { ($0, LocalEmbedder.cosineSimilarity(correctionEmbedding, $0.embedding)) }
         guard let best = scored.max(by: { $0.1 < $1.1 }), best.1 >= minimumSimilarity else { return nil }
         return best.0
@@ -196,7 +218,7 @@ public final class MemoryGraphStore {
     /// `IngestionActor.enqueue` checks whether ANY fact in the set is `isUserEdited` before
     /// invalidating any of them, rather than picking one arbitrarily. Never mutates.
     public func correctionCandidates(subjectID: UUID, objectID: UUID) -> [FactEdge] {
-        activeFacts().filter { $0.subjectID == subjectID && $0.objectID == objectID }
+        activeFacts(subjectID: subjectID).filter { $0.objectID == objectID }
     }
 
     /// Sets `invalidAt` on the currently-active fact(s) this correction is actually about —
@@ -260,17 +282,49 @@ public final class MemoryGraphStore {
     /// Save failures used to be swallowed by `try?`, leaving an in-memory graph that silently
     /// diverged from disk. They are now logged (subsystem `cc.nerdsnipe.AiPersona`, category
     /// `Store`) — the mutating APIs stay non-throwing so existing hosts keep compiling.
+    private var batchDepth = 0
+    private var hasUnsavedBatchedChanges = false
+
+    /// Runs `body` with disk saves deferred, then saves once. A host ingesting many facts for one
+    /// source (e.g. a contact's tags, deals, tasks) otherwise pays a full SwiftData save per fact.
+    /// Fetches inside `body` still see the pending inserts and edits.
+    public func performBatch(_ body: () -> Void) {
+        batchDepth += 1
+        body()
+        batchDepth -= 1
+        if batchDepth == 0, hasUnsavedBatchedChanges {
+            hasUnsavedBatchedChanges = false
+            persist()
+        }
+    }
+
     private func persist() {
+        if batchDepth > 0 {
+            hasUnsavedBatchedChanges = true
+            return
+        }
         do { try context.save() } catch {
             logger.error("SwiftData save failed: \(String(describing: error), privacy: .public)")
         }
     }
 
     private func fetchAll<T: PersistentModel>(_ type: T.Type) -> [T] {
-        do { return try context.fetch(FetchDescriptor<T>()) } catch {
-            logger.error("SwiftData fetch of \(String(describing: type), privacy: .public) failed: \(String(describing: error), privacy: .public)")
+        fetchOrEmpty(FetchDescriptor<T>())
+    }
+
+    private func fetchOrEmpty<T: PersistentModel>(_ descriptor: FetchDescriptor<T>) -> [T] {
+        do { return try context.fetch(descriptor) } catch {
+            logger.error("SwiftData fetch of \(String(describing: T.self), privacy: .public) failed: \(String(describing: error), privacy: .public)")
             return []
         }
+    }
+
+    /// Active facts for one subject, filtered in the store rather than in memory.
+    private func activeFacts(subjectID: UUID) -> [FactEdge] {
+        let subject = subjectID.uuidString
+        return fetchOrEmpty(FetchDescriptor<FactEdge>(
+            predicate: #Predicate { $0.subjectIDString == subject && $0.invalidAt == nil }
+        ))
     }
 
     public func activeFacts() -> [FactEdge] {

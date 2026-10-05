@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `MemoryGraphStore.performBatch(_:)` runs a block with disk saves deferred and saves once at the end, so a
+  host ingesting many facts for one source no longer pays a full SwiftData save per fact. Fetches inside the
+  block still see pending inserts and edits.
+
+### Changed
+- `findEntity(externalRef:)`, `invalidateFacts(subjectID:predicate:)`, `correctionCandidate` and
+  `correctionCandidates` use predicate fetches instead of loading the whole table, so a sync of N
+  externally-anchored entities is no longer O(N²).
+- `upsertEntity(externalRef:…)` falls back to name matching only against entities with no external anchor. An
+  entity already pinned to a different record is no longer absorbed by a same-named one.
+
 ## [1.1.1] - 2026-09-27
 
 ### Changed
